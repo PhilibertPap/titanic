@@ -31,6 +31,10 @@ class SimulationConfig:
     top_facet_tag: int = 4
     clamp_all_edges: bool = True
     clamp_rotations: bool = True
+    # Geometry convention (see `mesh.py`): x = longitudinal, y = transverse, z = vertical
+    iceberg_center_y: float | None = None
+    waterline_z: float = 0.0
+    iceberg_depth_below_waterline: float = 2.0
     y_mid_factor: float = 0.9
     z_mid_factor: float = 0.2
     phase_field_preset_file: str = "coupling/phase_field_selected_preset.json"

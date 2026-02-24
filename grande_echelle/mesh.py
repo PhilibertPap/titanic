@@ -9,19 +9,84 @@ geom = gmsh.model.geo
 
 # Segment coque "Titanic impact" (ordre de grandeur)
 L = 100.0   # longueur de segment [m]
-B = 14.1    # demi-largeur [m]
-T = 10.5    # tirant d'eau [m]
+B = 14.1    # demi-largeur [m] -> axe y (transversal)
+T = 10.5    # tirant d'eau [m] -> axe z (vertical)
 a = 0.25    # courbure longitudinale
 c = 0.08    # courbure verticale (reduite)
 H = 0.02
 
-# Raffine en u pour eviter des bandes rivets trop larges.
-Nu = 320
-Nv = 48
+# Maillage structuré non uniforme:
+# - iceberg mobile sur toute la longueur x -> pas de raffinement local en x
+# - raffinement dans la bande transversale (paramètre v) de contact probable
+# - plus grossier ailleurs pour accélérer les calculs
+# Mode aperçu rapide (ParaView / itérations de mise au point)
+# Réduire fortement la taille pour accélérer la génération + le solveur.
+Nu = 72
+Nv = 10
 rivet_u_centers = [0.2, 0.4, 0.6, 0.8]
 # Rivet Titanic: diametre nominal ~0.875 in (22.2 mm), pas longitudinal ~3 in (76.2 mm).
 # La bande materiau est homogenisee. Avec Nu=320, une colonne vaut L/Nu=0.3125 m.
 rivet_band_half_width_u = 0.0018
+
+# Zone probable de rupture (règle géométrique simple en espace paramétrique)
+# u ~ position longitudinale (x), v ~ position transversale (y = B v)
+# L'iceberg se déplace sur toute la longueur -> on raffine surtout selon v.
+impact_v_center = 0.00
+impact_v_half_width = 0.18
+
+
+def _piecewise_refined_nodes(n, center, half_width, fine_fraction=0.55):
+    """
+    Build a monotone partition of [0, 1] with a denser central band [center-half_width, center+half_width].
+    The total number of intervals is exactly `n`.
+    """
+    x0 = max(0.0, center - half_width)
+    x1 = min(1.0, center + half_width)
+    left_len = x0
+    mid_len = max(x1 - x0, 1e-12)
+    right_len = 1.0 - x1
+
+    n_mid = max(4, int(round(fine_fraction * n)))
+    n_mid = min(n - 2, n_mid) if n >= 6 else max(1, n - 2)
+    n_outer = n - n_mid
+    if n_outer <= 0:
+        n_mid = n
+        n_left = 0
+        n_right = 0
+    else:
+        if left_len + right_len < 1e-12:
+            n_left = n_outer // 2
+        else:
+            n_left = int(round(n_outer * left_len / (left_len + right_len)))
+        n_left = min(max(n_left, 0), n_outer)
+        n_right = n_outer - n_left
+
+    # Guarantee all non-zero-length segments receive at least one interval when possible.
+    if left_len > 1e-12 and n_left == 0 and n_mid > 1:
+        n_left = 1
+        n_mid -= 1
+    if right_len > 1e-12 and n_right == 0 and n_mid > 1:
+        n_right = 1
+        n_mid -= 1
+
+    nodes = [0.0]
+
+    def append_uniform_segment(a_seg, b_seg, n_seg):
+        if n_seg <= 0 or b_seg <= a_seg:
+            return
+        h_seg = (b_seg - a_seg) / n_seg
+        for k in range(1, n_seg + 1):
+            nodes.append(a_seg + k * h_seg)
+
+    append_uniform_segment(0.0, x0, n_left)
+    append_uniform_segment(x0, x1, n_mid)
+    append_uniform_segment(x1, 1.0, n_right)
+
+    # Numerical cleanup and exact endpoint
+    nodes[0] = 0.0
+    if nodes[-1] != 1.0:
+        nodes[-1] = 1.0
+    return nodes
 
 def hull_xyz(u, v):
     x = L * u
@@ -33,11 +98,14 @@ def hull_xyz(u, v):
 
 lcar = 0.15
 pts = [[0]*(Nv+1) for _ in range(Nu+1)]
+u_nodes = [i / Nu for i in range(Nu + 1)]
+v01_nodes = _piecewise_refined_nodes(Nv, 0.5 * (impact_v_center + 1.0), 0.5 * impact_v_half_width)
+v_nodes = [-1.0 + 2.0 * s for s in v01_nodes]
 
 for i in range(Nu+1):
-    u = i / Nu
+    u = u_nodes[i]
     for j in range(Nv+1):
-        v = -1 + 2 * j / Nv
+        v = v_nodes[j]
         x, y, z = hull_xyz(u, v)
         pts[i][j] = geom.addPoint(x, y, z, lcar)
 

@@ -35,12 +35,21 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     comm = domain.comm
     xmin = comm.allreduce(domain.geometry.x[:, 0].min(), op=MPI.MIN)
     xmax = comm.allreduce(domain.geometry.x[:, 0].max(), op=MPI.MAX)
+    ymin = comm.allreduce(domain.geometry.x[:, 1].min(), op=MPI.MIN)
     ymax = comm.allreduce(domain.geometry.x[:, 1].max(), op=MPI.MAX)
     zmin = comm.allreduce(domain.geometry.x[:, 2].min(), op=MPI.MIN)
     zmax = comm.allreduce(domain.geometry.x[:, 2].max(), op=MPI.MAX)
 
-    y_mid = cfg.y_mid_factor * ymax
-    z_mid = zmin + cfg.z_mid_factor * (zmax - zmin)
+    iceberg_center_y = getattr(cfg, "iceberg_center_y", None)
+    if iceberg_center_y is not None:
+        y_mid = float(np.clip(iceberg_center_y, ymin, ymax))
+    else:
+        y_mid = cfg.y_mid_factor * ymax
+    if hasattr(cfg, "waterline_z") and hasattr(cfg, "iceberg_depth_below_waterline"):
+        z_target = cfg.waterline_z - cfg.iceberg_depth_below_waterline
+        z_mid = float(np.clip(z_target, zmin, zmax))
+    else:
+        z_mid = zmin + cfg.z_mid_factor * (zmax - zmin)
 
     x0 = xmin
     x1 = xmax
@@ -60,11 +69,16 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
         f_ice = -p * model.e3
         L = ufl.dot(f_ice, model.u_test) * ufl.dx
     elif cfg.iceberg_loading == "dirichlet_displacement":
-        y_threshold = y_mid - cfg.iceberg_patch_radius_factor * cfg.sigma
-        z_radius = cfg.iceberg_patch_radius_factor * cfg.sigma
+        radius_y = cfg.iceberg_patch_radius_factor * cfg.sigma
+        radius_z = cfg.iceberg_patch_radius_factor * cfg.sigma
+        waterline_z = getattr(cfg, "waterline_z", np.inf)
 
         def impact_region(x):
-            return (x[1] >= y_threshold) & (np.abs(x[2] - z_mid) <= z_radius)
+            y_scaled = (x[1] - y_mid) / max(radius_y, 1e-12)
+            z_scaled = (x[2] - z_mid) / max(radius_z, 1e-12)
+            inside_patch = (y_scaled * y_scaled + z_scaled * z_scaled) <= 1.0
+            submerged = x[2] <= waterline_z
+            return inside_patch & submerged
 
         ice_dofs = fem.locate_dofs_geometrical((model.V.sub(0), model.Vu), impact_region)
         u_ice = fem.Function(model.Vu, name="IcebergDisplacement")
