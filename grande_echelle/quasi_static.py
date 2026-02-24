@@ -92,12 +92,20 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     else:
         z_mid = zmin + cfg.z_mid_factor * (zmax - zmin)
 
+    x_zone_debut = float(getattr(cfg, "iceberg_zone_x_debut_m", xmin))
+    x_zone_fin = float(getattr(cfg, "iceberg_zone_x_fin_m", xmax))
+    x_zone_debut = float(np.clip(x_zone_debut, xmin, xmax))
+    x_zone_fin = float(np.clip(x_zone_fin, xmin, xmax))
+    if x_zone_fin < x_zone_debut:
+        x_zone_debut, x_zone_fin = x_zone_fin, x_zone_debut
+
     if getattr(cfg, "iceberg_moves_from_xmax_to_xmin", False):
-        x0 = xmax
-        x1 = xmin
+        # Mouvement "vers l'avant" du patch numerique dans la zone definie
+        x0 = x_zone_fin
+        x1 = x_zone_debut
     else:
-        x0 = xmin
-        x1 = xmax
+        x0 = x_zone_debut
+        x1 = x_zone_fin
     vx = (x1 - x0) / cfg.t_final
 
     c0 = fem.Constant(domain, (x0, y_mid, z_mid))

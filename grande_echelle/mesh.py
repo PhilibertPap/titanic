@@ -51,6 +51,9 @@ NV_CTRL = 10
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
 ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
+# Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
+ICEBERG_X_START = 0.0
+ICEBERG_X_END = 92.0
 
 # Mesh size field (refine around the iceberg trajectory band)
 SIZE_MIN = 0.25
@@ -64,6 +67,7 @@ CURVATURE_BAND_SIZE_MIN = 0.45
 CURVATURE_BAND_SIZE_MAX = 2.20
 CURVATURE_BAND_HALF_THICKNESS_Z = 0.70
 CURVATURE_BAND_MARGIN_Y = 1.0
+CURVATURE_BAND_MARGIN_X = 8.0
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -181,9 +185,17 @@ def _add_mesh_size_field(occ) -> None:
     # sample a 3D path at the impact depth across x (x+ -> x-).
     s_impact = max(0.0, min(1.0, (ICEBERG_CENTER_Z - Z_BOTTOM) / (Z_TOP - Z_BOTTOM)))
     v_impact = 2.0 * s_impact - 1.0
+    x_start = max(0.0, min(L, ICEBERG_X_START))
+    x_end = max(0.0, min(L, ICEBERG_X_END))
+    if x_end < x_start:
+        x_start, x_end = x_end, x_start
+    u_start = x_start / L
+    u_end = x_end / L
+
     path_points = []
     for k in range(41):
-        u = 1.0 - k / 40.0
+        # Sample only the longitudinal zone where the iceberg is assumed to act.
+        u = u_end + (u_start - u_end) * (k / 40.0)
         x, y_shell, z = hull_xyz(u, v_impact)
         # Shift slightly outward/inward so the distance field stays centered on the target band
         y = y_shell + (ICEBERG_CENTER_Y - hull_xyz(0.5, v_impact)[1])
@@ -205,7 +217,8 @@ def _add_mesh_size_field(occ) -> None:
     field.setNumber(f_th_traj, "DistMin", DIST_MIN)
     field.setNumber(f_th_traj, "DistMax", DIST_MAX)
 
-    # 2) Extra refinement along x (not along z): narrow horizontal bands centered
+    # 2) Extra refinement in the iceberg longitudinal zone (not all x): narrow
+    # horizontal bands centered on the strongest curvature zones.
     # on the strongest curvature zones of the transverse profile (bilge and
     # lower-flank transition). This keeps the "all x" refinement but avoids
     # over-refining the full height.
@@ -228,8 +241,8 @@ def _add_mesh_size_field(occ) -> None:
         f_box = field.add("Box")
         field.setNumber(f_box, "VIn", CURVATURE_BAND_SIZE_MIN)
         field.setNumber(f_box, "VOut", CURVATURE_BAND_SIZE_MAX)
-        field.setNumber(f_box, "XMin", -1.0)
-        field.setNumber(f_box, "XMax", L + 1.0)
+        field.setNumber(f_box, "XMin", x_start - CURVATURE_BAND_MARGIN_X)
+        field.setNumber(f_box, "XMax", x_end + CURVATURE_BAND_MARGIN_X)
         field.setNumber(f_box, "YMin", -y_extent)
         field.setNumber(f_box, "YMax", y_extent)
         field.setNumber(f_box, "ZMin", z_center - CURVATURE_BAND_HALF_THICKNESS_Z)

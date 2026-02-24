@@ -50,10 +50,12 @@ def config_par_defaut() -> dict:
         "shell_ultimate_strength_pa": 431e6,
         "steel_sulfur_mass_fraction": 0.00065,
         "sigma": 3.0,
-        "pressure_peak": 5e6,
+        # Pression de contact homogeneisee (ordre de grandeur prudent):
+        # ~0.1 a 0.3 MPa dans des estimations de collision/glissement Titanic.
+        "pressure_peak": 2.0e5,
         "iceberg_loading": "dirichlet_displacement",
         "ramp_amplitude_iceberg": True,
-        "iceberg_disp_peak": 5e-2,
+        "iceberg_disp_peak": 2.0e-2,
         "iceberg_disp_sign": 1.0,
         "iceberg_patch_radius_factor": 3.0,
         "t_final": 1.0,
@@ -67,6 +69,11 @@ def config_par_defaut() -> dict:
         "clamp_all_edges": True,
         "clamp_rotations": True,
         "iceberg_center_y": -10.8,
+        # Zone de contact longitudinale (x) : la collision/fissuration ne concerne pas toute la longueur.
+        # On prend par defaut ~300 ft ~ 91 m de zone potentiellement endommagee (ordre de grandeur Wilding/inquiries),
+        # localisee vers l'avant.
+        "iceberg_zone_x_debut_m": 0.0,
+        "iceberg_zone_x_fin_m": 92.0,
         "waterline_z": 0.0,
         "iceberg_depth_below_waterline": 7.5,
         "iceberg_moves_from_xmax_to_xmin": True,
@@ -173,6 +180,8 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
         num_steps=20,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=2,
+        pressure_peak=2.0e5,
+        iceberg_disp_peak=1.5e-2,
         # Exemple de pas adaptes simples (plus denses au milieu de l'impact)
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
@@ -195,6 +204,8 @@ def config_etude_rivets_production(with_rivets: bool = True):
         num_steps=36,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=3,
+        pressure_peak=2.0e5,
+        iceberg_disp_peak=1.5e-2,
         # Plus de points autour de la zone centrale de chargement
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
