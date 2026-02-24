@@ -51,7 +51,10 @@ def _build_mesh(config: LocalPhaseFieldRunConfig):
     )
 
 
-def run_local_phase_field(config: LocalPhaseFieldRunConfig = LocalPhaseFieldRunConfig()) -> Path:
+def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Path:
+    if config is None:
+        config = LocalPhaseFieldRunConfig()
+
     gc_value, l0_value = _load_baseline(config)
     domain = _build_mesh(config)
 
@@ -135,20 +138,52 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig = LocalPhaseFieldRunC
 
     results_dir = Path(config.results_root) / config.case_name
     results_dir.mkdir(parents=True, exist_ok=True)
-    metadata = {
-        "Gc_J_m2": gc_value,
-        "l0_m": l0_value,
-        "young_modulus_pa": config.young_modulus_pa,
-        "poisson_ratio": config.poisson_ratio,
-        "mesh_nx": config.nx,
-        "mesh_ny": config.ny,
-        "length_m": config.length_m,
-        "height_m": config.height_m,
-    }
-    (results_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    if MPI.COMM_WORLD.rank == 0:
+        metadata = {
+            "Gc_J_m2": gc_value,
+            "l0_m": l0_value,
+            "young_modulus_pa": config.young_modulus_pa,
+            "poisson_ratio": config.poisson_ratio,
+            "mesh_nx": config.nx,
+            "mesh_ny": config.ny,
+            "length_m": config.length_m,
+            "height_m": config.height_m,
+        }
+        (results_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     time_values = np.linspace(0.0, 1.0, config.n_steps + 1)
     monitor_rows = []
+    petsc_options = {"ksp_type": config.ksp_type, "pc_type": config.pc_type}
+
+    # Staggered scheme: reuse assembled problem objects while updating the coefficient fields
+    # (`d_old`, `u`) between iterations.
+    g = (1.0 - d_old) ** 2 + k_res
+    a_u = ufl.inner(g * sigma(du), eps(v)) * ufl.dx
+    L_u = ufl.dot(f_zero, v) * ufl.dx
+    problem_u = dolfinx.fem.petsc.LinearProblem(
+        a_u,
+        L_u,
+        u=u,
+        bcs=bcs_u,
+        petsc_options_prefix="pf_u",
+        petsc_options=petsc_options,
+    )
+
+    psi_u = psi_bulk(u)
+    psi_drive_expr = psi_tension(u) if config.use_tension_compression_split else psi_u
+    a_d = (
+        gc * l0 * ufl.dot(ufl.grad(dd), ufl.grad(eta))
+        + (gc / l0 + 2.0 * psi_drive_expr) * dd * eta
+    ) * ufl.dx
+    L_d = (2.0 * psi_drive_expr) * eta * ufl.dx
+    problem_d = dolfinx.fem.petsc.LinearProblem(
+        a_d,
+        L_d,
+        u=d,
+        bcs=[],
+        petsc_options_prefix="pf_d",
+        petsc_options=petsc_options,
+    )
 
     with io.VTKFile(MPI.COMM_WORLD, results_dir / "displacement.pvd", "w") as disp_vtk:
         with io.VTKFile(MPI.COMM_WORLD, results_dir / "damage.pvd", "w") as dam_vtk:
@@ -157,40 +192,8 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig = LocalPhaseFieldRunC
 
                 for _ in range(config.n_alt_iters):
                     # Solve displacement with frozen damage
-                    g = (1.0 - d_old) ** 2 + k_res
-                    a_u = ufl.inner(g * sigma(du), eps(v)) * ufl.dx
-                    L_u = ufl.dot(f_zero, v) * ufl.dx
-                    problem_u = dolfinx.fem.petsc.LinearProblem(
-                        a_u,
-                        L_u,
-                        u=u,
-                        bcs=bcs_u,
-                        petsc_options_prefix="pf_u",
-                        petsc_options={
-                            "ksp_type": config.ksp_type,
-                            "pc_type": config.pc_type,
-                        },
-                    )
                     problem_u.solve()
 
-                    psi_u = psi_bulk(u)
-                    psi_drive = psi_tension(u) if config.use_tension_compression_split else psi_u
-                    a_d = (
-                        gc * l0 * ufl.dot(ufl.grad(dd), ufl.grad(eta))
-                        + (gc / l0 + 2.0 * psi_drive) * dd * eta
-                    ) * ufl.dx
-                    L_d = (2.0 * psi_drive) * eta * ufl.dx
-                    problem_d = dolfinx.fem.petsc.LinearProblem(
-                        a_d,
-                        L_d,
-                        u=d,
-                        bcs=[],
-                        petsc_options_prefix="pf_d",
-                        petsc_options={
-                            "ksp_type": config.ksp_type,
-                            "pc_type": config.pc_type,
-                        },
-                    )
                     problem_d.solve()
 
                     d_new = np.clip(d.x.array, 0.0, 1.0)

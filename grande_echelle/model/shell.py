@@ -50,6 +50,7 @@ class ShellModel:
     V: any
     Vu: any
     Vtheta: any
+    Vd: any
     v: any
     u_test: any
     a: any
@@ -60,11 +61,17 @@ class ShellModel:
     E_field: any
     nu_field: any
     thick_field: any
+    damage_state: any
 
 
 def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     gdim = domain.geometry.dim
     tdim = domain.topology.dim
+    if facets is None:
+        raise ValueError(
+            "Facet tags are required to build shell boundary conditions, but facet_tags is None. "
+            "Regenerate the mesh with physical groups on boundary facets/edges."
+        )
 
     E, nu, thick = build_material_fields(domain, cell_tags, cfg)
     lmbda = E * nu / (1 + nu) / (1 - 2 * nu)
@@ -121,6 +128,14 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
 
     Vu, _ = V.sub(0).collapse()
     Vtheta, _ = V.sub(1).collapse()
+    Vd = fem.functionspace(domain, ("CG", 1))
+    damage_state = fem.Function(Vd, name="DamageState")
+    damage_state.x.array[:] = 0.0
+    k_res_mech = fem.Constant(
+        domain,
+        cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
+    )
+    degradation = (1.0 - damage_state) ** 2 + k_res_mech
 
     edge_tags = [cfg.left_facet_tag, cfg.right_facet_tag]
     if cfg.clamp_all_edges:
@@ -137,11 +152,16 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
             rot_dofs = fem.locate_dofs_topological((V.sub(1), Vtheta), 1, facets.find(facet_tag))
             bcs.append(fem.dirichletbc(thetaD, rot_dofs, V.sub(1)))
 
+    # Staggered global phase-field coupling: the mechanical tangent is degraded by the
+    # current damage state. The solver updates `damage_state` between load steps.
     Wdef = (
-        ufl.inner(N, eps_test)
-        + ufl.inner(M, kappa_test)
-        + ufl.dot(Q, gamma_test)
-        + drilling_stress * drilling_strain_test
+        degradation
+        * (
+            ufl.inner(N, eps_test)
+            + ufl.inner(M, kappa_test)
+            + ufl.dot(Q, gamma_test)
+            + drilling_stress * drilling_strain_test
+        )
     ) * ufl.dx
     a = ufl.derivative(Wdef, v, dv)
 
@@ -153,6 +173,7 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         V=V,
         Vu=Vu,
         Vtheta=Vtheta,
+        Vd=Vd,
         v=v,
         u_test=u_test,
         a=a,
@@ -163,4 +184,5 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         E_field=E,
         nu_field=nu,
         thick_field=thick,
+        damage_state=damage_state,
     )

@@ -86,8 +86,9 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
 
     u_out = fem.Function(model.Vu, name="Displacement")
     theta_out = fem.Function(model.Vtheta, name="Rotation")
-    Vd = fem.functionspace(domain, ("CG", 1))
-    damage = fem.Function(Vd, name="Damage")
+    Vd = model.Vd
+    damage = model.damage_state
+    damage.name = "Damage"
     damage_old = fem.Function(Vd, name="DamageOld")
     history = fem.Function(Vd, name="HistoryField")
     damage.x.array[:] = 0.0
@@ -159,6 +160,8 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                             )
 
                         u_ice.interpolate(prescribed_displacement)
+                    # Mechanical solve uses damage from the previous converged load step
+                    # through `model.damage_state` embedded in the shell bilinear form.
                     problem.solve()
                     u_out.interpolate(model.v.sub(0))
                     theta_out.interpolate(model.v.sub(1))

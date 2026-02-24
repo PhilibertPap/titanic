@@ -26,7 +26,9 @@ except ImportError:  # pragma: no cover - script execution fallback
     from solvers.quasi_static import run_quasi_static
 
 
-def run(cfg=DEFAULT_CONFIG):
+def run(cfg=None):
+    if cfg is None:
+        cfg = DEFAULT_CONFIG
     meshdata = read_mesh(cfg.mesh_stem)
     domain = meshdata.mesh
     cell_tags = meshdata.cell_tags

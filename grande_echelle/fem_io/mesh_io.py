@@ -60,6 +60,8 @@ def write_material_regions(material_file: Path, domain, cell_tags, default_tag: 
 
 
 def write_run_metadata(metadata_file: Path, cfg, phase_field_preset: dict | None = None) -> None:
+    if MPI.COMM_WORLD.rank != 0:
+        return
     metadata = {
         "mesh_stem": cfg.mesh_stem,
         "case_name": cfg.case_name,
