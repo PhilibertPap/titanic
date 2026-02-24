@@ -51,8 +51,12 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     else:
         z_mid = zmin + cfg.z_mid_factor * (zmax - zmin)
 
-    x0 = xmin
-    x1 = xmax
+    if getattr(cfg, "iceberg_moves_from_xmax_to_xmin", False):
+        x0 = xmax
+        x1 = xmin
+    else:
+        x0 = xmin
+        x1 = xmax
     vx = (x1 - x0) / cfg.t_final
 
     c0 = fem.Constant(domain, (x0, y_mid, z_mid))

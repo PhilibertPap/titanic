@@ -1,206 +1,226 @@
 import gmsh
 
+
 filename = "mesh/coque"
 SHELL_CELL_TAG = 1
-RIVET_CELL_TAG = 2
-
-gmsh.initialize()
-geom = gmsh.model.geo
-
-# Segment coque "Titanic impact" (ordre de grandeur)
-L = 100.0   # longueur de segment [m]
-B = 14.1    # demi-largeur [m] -> axe y (transversal)
-T = 10.5    # tirant d'eau [m] -> axe z (vertical)
-a = 0.25    # courbure longitudinale
-c = 0.08    # courbure verticale (reduite)
-H = 0.02
-
-# Maillage structuré non uniforme:
-# - iceberg mobile sur toute la longueur x -> pas de raffinement local en x
-# - raffinement dans la bande transversale (paramètre v) de contact probable
-# - plus grossier ailleurs pour accélérer les calculs
-# Mode aperçu rapide (ParaView / itérations de mise au point)
-# Réduire fortement la taille pour accélérer la génération + le solveur.
-Nu = 36
-Nv = 6
-rivet_u_centers = [0.2, 0.4, 0.6, 0.8]
-# Rivet Titanic: diametre nominal ~0.875 in (22.2 mm), pas longitudinal ~3 in (76.2 mm).
-# La bande materiau est homogenisee. Avec Nu=320, une colonne vaut L/Nu=0.3125 m.
-rivet_band_half_width_u = 0.0018
-
-# Zone probable de rupture (règle géométrique simple en espace paramétrique)
-# u ~ position longitudinale (x), v ~ position transversale (y = B v)
-# L'iceberg se déplace sur toute la longueur -> on raffine une BANDE en v sur toute la longueur x.
-impact_v_center = 0.00
-impact_v_half_width = 0.18
+RIVET_CELL_TAG = 2  # kept for compatibility with the solver configuration
 
 
-def _piecewise_refined_nodes(n, center, half_width, fine_fraction=0.55):
-    """
-    Build a monotone partition of [0, 1] with a denser central band [center-half_width, center+half_width].
-    The total number of intervals is exactly `n`.
-    """
-    x0 = max(0.0, center - half_width)
-    x1 = min(1.0, center + half_width)
-    left_len = x0
-    mid_len = max(x1 - x0, 1e-12)
-    right_len = 1.0 - x1
+# Geometry scales for a local shell patch
+L = 100.0   # longitudinal length [m] -> x
+# Titanic draft is commonly cited around 10.5 m; we span approximately the immersed height.
+DRAFT = 10.5
+Z_BOTTOM = -DRAFT
+Z_TOP = 0.0
 
-    n_mid = max(4, int(round(fine_fraction * n)))
-    n_mid = min(n - 2, n_mid) if n >= 6 else max(1, n - 2)
-    n_outer = n - n_mid
-    if n_outer <= 0:
-        n_mid = n
-        n_left = 0
-        n_right = 0
-    else:
-        if left_len + right_len < 1e-12:
-            n_left = n_outer // 2
-        else:
-            n_left = int(round(n_outer * left_len / (left_len + right_len)))
-        n_left = min(max(n_left, 0), n_outer)
-        n_right = n_outer - n_left
+# Shell mainly in OXZ plane: y is the local outward offset of the shell patch.
+# Shape cues (from Titanic hull lines) used here:
+# - rounded bilge / stronger flare toward the upper side shell
+# - long fuller mid-body
+# - narrowing toward bow and stern
+Y_KEEL = 0.08
+Y_BILGE_BASE = 0.75
+Y_WATERLINE_BASE = 2.40
+Y_MIDSHIP_FULLNESS = 0.55
+Y_LONGITUDINAL_WARP = 0.06
 
-    # Guarantee all non-zero-length segments receive at least one interval when possible.
-    if left_len > 1e-12 and n_left == 0 and n_mid > 1:
-        n_left = 1
-        n_mid -= 1
-    if right_len > 1e-12 and n_right == 0 and n_mid > 1:
-        n_right = 1
-        n_mid -= 1
+# Longitudinal curvature in z (very mild):
+# - near-waterline sheer-like variation stronger than near keel
+# - weak global sag/hog over the modeled segment
+Z_SHEER_AMPLITUDE = 0.28
+Z_KEEL_SAG_AMPLITUDE = 0.10
+Z_END_RISE_AMPLITUDE = 0.22
 
-    nodes = [0.0]
+# Longitudinal planform narrowing (half-breadth effect): near-constant mid-body, tapered ends
+MIDBODY_U0 = 0.18
+MIDBODY_U1 = 0.82
+END_TAPER_MIN = 0.65
 
-    def append_uniform_segment(a_seg, b_seg, n_seg):
-        if n_seg <= 0 or b_seg <= a_seg:
-            return
-        h_seg = (b_seg - a_seg) / n_seg
-        for k in range(1, n_seg + 1):
-            nodes.append(a_seg + k * h_seg)
+# Loft sections (couples) along x
+N_SECTIONS_X = 11
+N_SECTION_PTS = 13
 
-    append_uniform_segment(0.0, x0, n_left)
-    append_uniform_segment(x0, x1, n_mid)
-    append_uniform_segment(x1, 1.0, n_right)
+# B-spline control net (geometry smoothness, not mesh density)
+NU_CTRL = 24
+NV_CTRL = 10
 
-    # Numerical cleanup and exact endpoint
-    nodes[0] = 0.0
-    if nodes[-1] != 1.0:
-        nodes[-1] = 1.0
-    return nodes
+# Iceberg trajectory (used only to define a mesh-refinement band)
+ICEBERG_CENTER_Y = 1.10     # m, aligned with stronger hull-side offset near impact depth
+ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
 
-def hull_xyz(u, v):
+# Mesh size field (refine around the iceberg trajectory band)
+SIZE_MIN = 0.30
+SIZE_MAX = 2.20
+DIST_MIN = 1.0
+DIST_MAX = 5.0
+
+
+def _smoothstep(a: float, b: float, x: float) -> float:
+    if x <= a:
+        return 0.0
+    if x >= b:
+        return 1.0
+    t = (x - a) / (b - a)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _midbody_fullness_factor(u: float) -> float:
+    # 1.0 in the parallel middle body, tapered near both ends.
+    left = _smoothstep(0.0, MIDBODY_U0, u)
+    right = 1.0 - _smoothstep(MIDBODY_U1, 1.0, u)
+    plateau = min(left, right)
+    return END_TAPER_MIN + (1.0 - END_TAPER_MIN) * plateau
+
+
+def hull_xyz(u: float, v: float) -> tuple[float, float, float]:
+    """Reference hull-side geometry used for diagnostics and control-point generation."""
     x = L * u
-    z_keel = -T + a * (u - 0.5)**2
-    y = B * v
-    # Partie immergée + franc-bord
-    z = z_keel + c * v**2 + H * v**4
+    xu = 2.0 * u - 1.0
+    s = 0.5 * (v + 1.0)  # 0 = lower z, 1 = upper z
+    fullness_x = _midbody_fullness_factor(u)
+    endness = 1.0 - fullness_x
+
+    # z = vertical coordinate, with mild longitudinal curvature (sag + sheer-like effect)
+    z = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * s
+    z += Z_KEEL_SAG_AMPLITUDE * (xu * xu)
+    z += Z_SHEER_AMPLITUDE * (s ** 2.2) * (xu * xu)
+    # Extra end rise/sheer near bow/stern, stronger toward the upper hull
+    z += Z_END_RISE_AMPLITUDE * (s ** 2.6) * (endness ** 1.4)
+
+    # Section profile y(z): bilge + flare, with mild longitudinal fullness.
+    # Fuller near midship, slimmer near the ends.
+    fullness = 1.0 + Y_MIDSHIP_FULLNESS * (1.0 - xu * xu)
+    y_bilge = Y_BILGE_BASE * fullness * fullness_x
+    y_waterline = Y_WATERLINE_BASE * fullness * fullness_x
+    if s <= 0.50:
+        t = s / 0.50
+        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.9)
+    else:
+        t = (s - 0.50) / 0.50
+        y_section = y_bilge + (y_waterline - y_bilge) * (t ** 1.15)
+    y = y_section + Y_LONGITUDINAL_WARP * xu * (2.0 * s - 1.0)
     return x, y, z
 
-# Tailles caractéristiques anisotropes par bande (pour futur phase-field local/global).
-# - bande d'impact/fracture probable: maillage fin
-# - ailleurs: maillage nettement plus grossier
-lcar_fine = 0.35
-lcar_transition = 0.8
-lcar_coarse = 2.0
 
+def _build_smooth_hull_surface(occ) -> tuple[int, dict[str, list[int]]]:
+    # Build a smooth hull patch by lofting several smooth transverse sections (couples).
+    # This gives a more ship-like geometry than a single control-net B-spline surface.
+    section_wires: list[int] = []
+    for i_sec in range(N_SECTIONS_X):
+        u = i_sec / (N_SECTIONS_X - 1)
+        pts: list[int] = []
+        for j in range(N_SECTION_PTS):
+            v = -1.0 + 2.0 * j / (N_SECTION_PTS - 1)
+            x, y, z = hull_xyz(u, v)
+            pts.append(occ.addPoint(x, y, z))
+        spline = occ.addSpline(pts)
+        wire = occ.addWire([spline], checkClosed=False)
+        section_wires.append(wire)
 
-def point_size_from_v(v):
-    dv = abs(v - impact_v_center)
-    if dv <= impact_v_half_width:
-        return lcar_fine
-    if dv <= 2.5 * impact_v_half_width:
-        return lcar_transition
-    return lcar_coarse
+    loft_out = occ.addThruSections(
+        section_wires,
+        makeSolid=False,
+        makeRuled=False,
+        maxDegree=5,
+    )
+    surf_tags = [tag for dim, tag in loft_out if dim == 2]
+    if len(surf_tags) != 1:
+        raise RuntimeError(f"Expected one lofted surface, got: {loft_out}")
+    surf = surf_tags[0]
+    occ.synchronize()
 
-
-pts = [[0]*(Nv+1) for _ in range(Nu+1)]
-u_nodes = [i / Nu for i in range(Nu + 1)]
-v01_nodes = _piecewise_refined_nodes(Nv, 0.5 * (impact_v_center + 1.0), 0.5 * impact_v_half_width)
-v_nodes = [-1.0 + 2.0 * s for s in v01_nodes]
-
-for i in range(Nu+1):
-    u = u_nodes[i]
-    for j in range(Nv+1):
-        v = v_nodes[j]
-        x, y, z = hull_xyz(u, v)
-        pts[i][j] = geom.addPoint(x, y, z, point_size_from_v(v))
-
-# Lignes longitudinales (u = const)
-long_lines = []
-for i in range(Nu+1):
-    row = []
-    for j in range(Nv):
-        l = geom.addLine(pts[i][j], pts[i][j+1])
-        row.append(l)
-    long_lines.append(row)
-
-# Lignes de niveau (v = const)
-vert_lines = []
-for j in range(Nv+1):
-    col = []
-    for i in range(Nu):
-        l = geom.addLine(pts[i][j], pts[i+1][j])
-        col.append(l)
-    vert_lines.append(col)
-
-# Surfaces quadrilatères
-shell_surfaces = []
-rivet_surfaces = []
-for i in range(Nu):
-    for j in range(Nv):
-        # les 4 lignes autour de la "cellule" (i,j)
-        l1 = long_lines[i][j]       # u = i,   v: j -> j+1
-        l3 = long_lines[i+1][j]     # u = i+1, v: j -> j+1
-        l2 = vert_lines[j+1][i]     # v = j+1, u: i -> i+1
-        l4 = vert_lines[j][i]       # v = j,   u: i -> i+1
-
-        cl = geom.addCurveLoop([l1, l2, -l3, -l4])
-        s  = geom.addSurfaceFilling([cl])
-        u_center = (i + 0.5) / Nu
-        is_rivet = any(abs(u_center - u0) <= rivet_band_half_width_u for u0 in rivet_u_centers)
-        if is_rivet:
-            rivet_surfaces.append(s)
+    # Identify boundary curves geometrically to preserve BC tags used by the solver.
+    boundary = gmsh.model.getBoundary([(2, surf)], oriented=False, recursive=False)
+    edge_map = {"left": [], "right": [], "bottom": [], "top": []}
+    remaining: list[tuple[int, float]] = []
+    for dim, tag in boundary:
+        if dim != 1:
+            continue
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(1, tag)
+        xmid = 0.5 * (xmin + xmax)
+        zmid = 0.5 * (zmin + zmax)
+        if abs(xmid - 0.0) < 1e-3 * L:
+            edge_map["left"].append(tag)
+        elif abs(xmid - L) < 1e-3 * L:
+            edge_map["right"].append(tag)
         else:
-            shell_surfaces.append(s)
+            remaining.append((tag, zmid))
 
-geom.synchronize()
+    if len(remaining) == 2:
+        remaining.sort(key=lambda item: item[1])
+        edge_map["bottom"].append(remaining[0][0])  # low z
+        edge_map["top"].append(remaining[1][0])     # high z
+    elif len(remaining) != 0:
+        raise RuntimeError(f"Unexpected number of non-x boundary curves: {len(remaining)}")
 
-# --- Définition des lignes de bord pour les conditions limites ---
+    return surf, edge_map
 
-# Bord gauche (u = 0) : toutes les lignes long_lines[0][j] pour j=0..Nv-1
-left_lines = [long_lines[0][j] for j in range(Nv)]
 
-# Bord droit (u = 1) : toutes les lignes long_lines[Nu][j]
-right_lines = [long_lines[Nu][j] for j in range(Nv)]
+def _add_mesh_size_field(occ) -> None:
+    # Refinement trajectory follows the shell more closely than a straight line:
+    # sample a 3D path at the impact depth across x (x+ -> x-).
+    s_impact = max(0.0, min(1.0, (ICEBERG_CENTER_Z - Z_BOTTOM) / (Z_TOP - Z_BOTTOM)))
+    v_impact = 2.0 * s_impact - 1.0
+    path_points = []
+    for k in range(41):
+        u = 1.0 - k / 40.0
+        x, y_shell, z = hull_xyz(u, v_impact)
+        # Shift slightly outward/inward so the distance field stays centered on the target band
+        y = y_shell + (ICEBERG_CENTER_Y - hull_xyz(0.5, v_impact)[1])
+        path_points.append(occ.addPoint(x, y, z))
+    traj = occ.addSpline(path_points)
+    occ.synchronize()
 
-# (optionnel) Bord bas (v = 0) et haut (v = Nv) si tu en as besoin
-bottom_lines = [vert_lines[0][i]  for i in range(Nu)]
-top_lines    = [vert_lines[Nv][i] for i in range(Nu)]
+    field = gmsh.model.mesh.field
+    f_dist = field.add("Distance")
+    field.setNumbers(f_dist, "CurvesList", [traj])
+    field.setNumber(f_dist, "Sampling", 200)
 
-# Coque: matériau standard et zones rivetées
-gmsh.model.addPhysicalGroup(2, shell_surfaces, SHELL_CELL_TAG)
-gmsh.model.setPhysicalName(2, SHELL_CELL_TAG, "HullPlate")
-if rivet_surfaces:
-    gmsh.model.addPhysicalGroup(2, rivet_surfaces, RIVET_CELL_TAG)
-    gmsh.model.setPhysicalName(2, RIVET_CELL_TAG, "HullRivets")
+    f_th = field.add("Threshold")
+    field.setNumber(f_th, "InField", f_dist)
+    field.setNumber(f_th, "SizeMin", SIZE_MIN)
+    field.setNumber(f_th, "SizeMax", SIZE_MAX)
+    field.setNumber(f_th, "DistMin", DIST_MIN)
+    field.setNumber(f_th, "DistMax", DIST_MAX)
 
-# Bords pour BC :
-gmsh.model.addPhysicalGroup(1, left_lines, 1)
-gmsh.model.setPhysicalName(1, 1, "Left")
-gmsh.model.addPhysicalGroup(1, right_lines, 2)
-gmsh.model.setPhysicalName(1, 2, "Right")
-gmsh.model.addPhysicalGroup(1, bottom_lines, 3)
-gmsh.model.setPhysicalName(1, 3, "Bottom")
-gmsh.model.addPhysicalGroup(1, top_lines, 4)
-gmsh.model.setPhysicalName(1, 4, "Top")
+    field.setAsBackgroundMesh(f_th)
 
-for i in range(Nu+1):
-    for j in range(Nv):
-        geom.mesh.setTransfiniteCurve(long_lines[i][j], 2)
-for j in range(Nv+1):
-    for i in range(Nu):
-        geom.mesh.setTransfiniteCurve(vert_lines[j][i], 2)
+    # Let the background field drive the mesh size instead of point-wise defaults.
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
-gmsh.model.mesh.generate(dim=2)
-gmsh.write(filename + ".msh")
-gmsh.finalize()
+
+def main():
+    gmsh.initialize()
+    gmsh.model.add("titanic_hull_segment")
+    occ = gmsh.model.occ
+
+    surf, edges = _build_smooth_hull_surface(occ)
+
+    gmsh.model.addPhysicalGroup(2, [surf], SHELL_CELL_TAG)
+    gmsh.model.setPhysicalName(2, SHELL_CELL_TAG, "HullPlate")
+
+    # Boundary tags expected by the solver
+    if edges["left"]:
+        gmsh.model.addPhysicalGroup(1, edges["left"], 1)
+        gmsh.model.setPhysicalName(1, 1, "Left")
+    if edges["right"]:
+        gmsh.model.addPhysicalGroup(1, edges["right"], 2)
+        gmsh.model.setPhysicalName(1, 2, "Right")
+    if edges["bottom"]:
+        gmsh.model.addPhysicalGroup(1, edges["bottom"], 3)
+        gmsh.model.setPhysicalName(1, 3, "Bottom")
+    if edges["top"]:
+        gmsh.model.addPhysicalGroup(1, edges["top"], 4)
+        gmsh.model.setPhysicalName(1, 4, "Top")
+
+    _add_mesh_size_field(occ)
+
+    gmsh.model.mesh.generate(2)
+    gmsh.write(filename + ".msh")
+    gmsh.finalize()
+
+
+if __name__ == "__main__":
+    main()
