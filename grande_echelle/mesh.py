@@ -6,35 +6,39 @@ SHELL_CELL_TAG = 1
 RIVET_CELL_TAG = 2  # kept for compatibility with the solver configuration
 
 
-# Geometry scales for a local shell patch
-L = 100.0   # longitudinal length [m] -> x
-# Titanic draft is commonly cited around 10.5 m; we span approximately the immersed height.
-DRAFT = 10.5
+# Geometry scales for a Titanic-like half-hull shell surface
+# (order of magnitude anchors: length ~269 m, beam ~28.2 m, draft ~10.5 m)
+L = 269.0   # ship length [m] -> x
+B_HALF = 14.1  # half-beam [m] -> y
+DRAFT = 10.5   # draft below waterline [m]
+FREEBOARD_TO_DECK = 7.8  # approx keel->deck total height ~18.3 m
 Z_BOTTOM = -DRAFT
-Z_TOP = 0.0
+Z_TOP = FREEBOARD_TO_DECK
 
-# Shell mainly in OXZ plane: y is the local outward offset of the shell patch.
-# Shape cues (from Titanic hull lines) used here:
-# - rounded bilge / stronger flare toward the upper side shell
-# - long fuller mid-body
-# - narrowing toward bow and stern
+# Half-hull surface: y is the half-breadth (outboard side).
+# Shape cues (from Titanic hull lines) approximated here:
+# - rounded bilge
+# - broad parallel mid-body
+# - tapered bow/stern
+# - slight tumblehome toward upper deck (very mild)
 Y_KEEL = 0.08
-Y_BILGE_BASE = 0.75
-Y_WATERLINE_BASE = 2.40
-Y_MIDSHIP_FULLNESS = 0.55
-Y_LONGITUDINAL_WARP = 0.06
+Y_BILGE_BASE = 8.6
+Y_WATERLINE_BASE = 13.9
+Y_DECK_BASE = 13.5
+Y_MIDSHIP_FULLNESS = 0.10
+Y_LONGITUDINAL_WARP = 0.12
 
 # Longitudinal curvature in z (very mild):
 # - near-waterline sheer-like variation stronger than near keel
 # - weak global sag/hog over the modeled segment
-Z_SHEER_AMPLITUDE = 0.28
+Z_SHEER_AMPLITUDE = 0.45
 Z_KEEL_SAG_AMPLITUDE = 0.10
-Z_END_RISE_AMPLITUDE = 0.22
+Z_END_RISE_AMPLITUDE = 0.18
 
-# Longitudinal planform narrowing (half-breadth effect): near-constant mid-body, tapered ends
-MIDBODY_U0 = 0.18
-MIDBODY_U1 = 0.82
-END_TAPER_MIN = 0.65
+# Longitudinal planform narrowing (half-breadth effect): long parallel mid-body and smoother ends
+MIDBODY_U0 = 0.14
+MIDBODY_U1 = 0.86
+END_TAPER_MIN = 0.22
 
 # Loft sections (couples) along x
 N_SECTIONS_X = 11
@@ -45,14 +49,20 @@ NU_CTRL = 24
 NV_CTRL = 10
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
-ICEBERG_CENTER_Y = 1.10     # m, aligned with stronger hull-side offset near impact depth
+ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
 ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.30
+SIZE_MIN = 0.25
 SIZE_MAX = 2.20
 DIST_MIN = 1.0
-DIST_MAX = 5.0
+DIST_MAX = 5.5
+
+# Extra refinement in a horizontal band (all x, limited z-thickness) around
+# the strongest section-curvature zone (roughly mid-height between keel and deck).
+MIDHEIGHT_SIZE_MIN = 0.45
+MIDHEIGHT_SIZE_MAX = 2.20
+MIDHEIGHT_BAND_HALF_THICKNESS_Z = 2.0
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -65,7 +75,7 @@ def _smoothstep(a: float, b: float, x: float) -> float:
 
 
 def _midbody_fullness_factor(u: float) -> float:
-    # 1.0 in the parallel middle body, tapered near both ends.
+    # 1.0 in the parallel middle body, smoothly tapered near both ends.
     left = _smoothstep(0.0, MIDBODY_U0, u)
     right = 1.0 - _smoothstep(MIDBODY_U1, 1.0, u)
     plateau = min(left, right)
@@ -76,29 +86,38 @@ def hull_xyz(u: float, v: float) -> tuple[float, float, float]:
     """Reference hull-side geometry used for diagnostics and control-point generation."""
     x = L * u
     xu = 2.0 * u - 1.0
-    s = 0.5 * (v + 1.0)  # 0 = lower z, 1 = upper z
+    s = 0.5 * (v + 1.0)  # 0 = keel, 1 = upper deck line
     fullness_x = _midbody_fullness_factor(u)
     endness = 1.0 - fullness_x
+    s_water = (0.0 - Z_BOTTOM) / (Z_TOP - Z_BOTTOM)
 
     # z = vertical coordinate, with mild longitudinal curvature (sag + sheer-like effect)
     z = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * s
     z += Z_KEEL_SAG_AMPLITUDE * (xu * xu)
-    z += Z_SHEER_AMPLITUDE * (s ** 2.2) * (xu * xu)
+    z += Z_SHEER_AMPLITUDE * (max(s - s_water, 0.0) / max(1.0 - s_water, 1e-9)) ** 1.8 * (xu * xu)
     # Extra end rise/sheer near bow/stern, stronger toward the upper hull
-    z += Z_END_RISE_AMPLITUDE * (s ** 2.6) * (endness ** 1.4)
+    z += Z_END_RISE_AMPLITUDE * (s ** 2.2) * (endness ** 1.6)
 
     # Section profile y(z): bilge + flare, with mild longitudinal fullness.
     # Fuller near midship, slimmer near the ends.
     fullness = 1.0 + Y_MIDSHIP_FULLNESS * (1.0 - xu * xu)
     y_bilge = Y_BILGE_BASE * fullness * fullness_x
     y_waterline = Y_WATERLINE_BASE * fullness * fullness_x
-    if s <= 0.50:
-        t = s / 0.50
-        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.9)
+    y_deck = Y_DECK_BASE * fullness * fullness_x
+
+    # Piecewise smooth half-breadth profile from keel to deck
+    s_bilge = 0.38
+    if s <= s_bilge:
+        t = s / s_bilge
+        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.75)
+    elif s <= s_water:
+        t = (s - s_bilge) / max(s_water - s_bilge, 1e-9)
+        y_section = y_bilge + (y_waterline - y_bilge) * (t ** 0.95)
     else:
-        t = (s - 0.50) / 0.50
-        y_section = y_bilge + (y_waterline - y_bilge) * (t ** 1.15)
-    y = y_section + Y_LONGITUDINAL_WARP * xu * (2.0 * s - 1.0)
+        t = (s - s_water) / max(1.0 - s_water, 1e-9)
+        # very mild tumblehome toward the deck
+        y_section = y_waterline + (y_deck - y_waterline) * (t ** 1.15)
+    y = -(y_section + Y_LONGITUDINAL_WARP * xu * (2.0 * s - 1.0))
     return x, y, z
 
 
@@ -172,18 +191,47 @@ def _add_mesh_size_field(occ) -> None:
     occ.synchronize()
 
     field = gmsh.model.mesh.field
-    f_dist = field.add("Distance")
-    field.setNumbers(f_dist, "CurvesList", [traj])
-    field.setNumber(f_dist, "Sampling", 200)
 
-    f_th = field.add("Threshold")
-    field.setNumber(f_th, "InField", f_dist)
-    field.setNumber(f_th, "SizeMin", SIZE_MIN)
-    field.setNumber(f_th, "SizeMax", SIZE_MAX)
-    field.setNumber(f_th, "DistMin", DIST_MIN)
-    field.setNumber(f_th, "DistMax", DIST_MAX)
+    # 1) Refinement along the iceberg trajectory
+    f_dist_traj = field.add("Distance")
+    field.setNumbers(f_dist_traj, "CurvesList", [traj])
+    field.setNumber(f_dist_traj, "Sampling", 200)
 
-    field.setAsBackgroundMesh(f_th)
+    f_th_traj = field.add("Threshold")
+    field.setNumber(f_th_traj, "InField", f_dist_traj)
+    field.setNumber(f_th_traj, "SizeMin", SIZE_MIN)
+    field.setNumber(f_th_traj, "SizeMax", SIZE_MAX)
+    field.setNumber(f_th_traj, "DistMin", DIST_MIN)
+    field.setNumber(f_th_traj, "DistMax", DIST_MAX)
+
+    # 2) Extra refinement along x (not along z): a horizontal band centered at mid-height
+    # to better resolve section curvature transitions.
+    z_mid = 0.5 * (Z_BOTTOM + Z_TOP)
+    y_extent = 1.2 * max(
+        abs(Y_WATERLINE_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
+        abs(Y_DECK_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
+        abs(ICEBERG_CENTER_Y),
+    ) + 1.0
+
+    f_box_midheight = field.add("Box")
+    field.setNumber(f_box_midheight, "VIn", MIDHEIGHT_SIZE_MIN)
+    field.setNumber(f_box_midheight, "VOut", MIDHEIGHT_SIZE_MAX)
+    field.setNumber(f_box_midheight, "XMin", -1.0)
+    field.setNumber(f_box_midheight, "XMax", L + 1.0)
+    field.setNumber(f_box_midheight, "YMin", -y_extent)
+    field.setNumber(f_box_midheight, "YMax", y_extent)
+    field.setNumber(
+        f_box_midheight, "ZMin", z_mid - MIDHEIGHT_BAND_HALF_THICKNESS_Z
+    )
+    field.setNumber(
+        f_box_midheight, "ZMax", z_mid + MIDHEIGHT_BAND_HALF_THICKNESS_Z
+    )
+
+    # 3) Combine both criteria
+    f_min = field.add("Min")
+    field.setNumbers(f_min, "FieldsList", [f_th_traj, f_box_midheight])
+
+    field.setAsBackgroundMesh(f_min)
 
     # Let the background field drive the mesh size instead of point-wise defaults.
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)

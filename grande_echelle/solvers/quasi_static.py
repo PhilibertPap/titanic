@@ -70,7 +70,9 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     extra_bcs = []
     if cfg.iceberg_loading == "neumann_pressure":
         p = moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0)
-        f_ice = -p * model.e3
+        # Positive sign chosen so the pressure pushes the shell inward for the
+        # current hull orientation (the previous sign was pulling it outward).
+        f_ice = p * model.e3
         L = ufl.dot(f_ice, model.u_test) * ufl.dx
     elif cfg.iceberg_loading == "dirichlet_displacement":
         radius_y = cfg.iceberg_patch_radius_factor * cfg.sigma
