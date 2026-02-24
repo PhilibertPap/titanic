@@ -58,11 +58,12 @@ SIZE_MAX = 2.20
 DIST_MIN = 1.0
 DIST_MAX = 5.5
 
-# Extra refinement in a horizontal band (all x, limited z-thickness) around
-# the strongest section-curvature zone (roughly mid-height between keel and deck).
-MIDHEIGHT_SIZE_MIN = 0.45
-MIDHEIGHT_SIZE_MAX = 2.20
-MIDHEIGHT_BAND_HALF_THICKNESS_Z = 2.0
+# Extra refinement in horizontal bands (all x) centered on the main transverse
+# curvature zones of the shell section (bilge + flank/flare transition).
+CURVATURE_BAND_SIZE_MIN = 0.45
+CURVATURE_BAND_SIZE_MAX = 2.20
+CURVATURE_BAND_HALF_THICKNESS_Z = 0.70
+CURVATURE_BAND_MARGIN_Y = 1.0
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -204,32 +205,40 @@ def _add_mesh_size_field(occ) -> None:
     field.setNumber(f_th_traj, "DistMin", DIST_MIN)
     field.setNumber(f_th_traj, "DistMax", DIST_MAX)
 
-    # 2) Extra refinement along x (not along z): a horizontal band centered at mid-height
-    # to better resolve section curvature transitions.
-    z_mid = 0.5 * (Z_BOTTOM + Z_TOP)
+    # 2) Extra refinement along x (not along z): narrow horizontal bands centered
+    # on the strongest curvature zones of the transverse profile (bilge and
+    # lower-flank transition). This keeps the "all x" refinement but avoids
+    # over-refining the full height.
     y_extent = 1.2 * max(
         abs(Y_WATERLINE_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
         abs(Y_DECK_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
         abs(ICEBERG_CENTER_Y),
-    ) + 1.0
+    ) + CURVATURE_BAND_MARGIN_Y
 
-    f_box_midheight = field.add("Box")
-    field.setNumber(f_box_midheight, "VIn", MIDHEIGHT_SIZE_MIN)
-    field.setNumber(f_box_midheight, "VOut", MIDHEIGHT_SIZE_MAX)
-    field.setNumber(f_box_midheight, "XMin", -1.0)
-    field.setNumber(f_box_midheight, "XMax", L + 1.0)
-    field.setNumber(f_box_midheight, "YMin", -y_extent)
-    field.setNumber(f_box_midheight, "YMax", y_extent)
-    field.setNumber(
-        f_box_midheight, "ZMin", z_mid - MIDHEIGHT_BAND_HALF_THICKNESS_Z
-    )
-    field.setNumber(
-        f_box_midheight, "ZMax", z_mid + MIDHEIGHT_BAND_HALF_THICKNESS_Z
-    )
+    # Approximate curvature-zone heights from the section profile definition.
+    # s_bilge is where the strong "turn of bilge" transitions into the flank.
+    s_bilge = 0.38
+    z_bilge = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * s_bilge
+    # A second, milder band slightly above bilge captures the flank curvature
+    # where the hull side is still strongly changing.
+    z_flank = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * 0.55
 
-    # 3) Combine both criteria
+    curvature_boxes = []
+    for z_center in (z_bilge, z_flank):
+        f_box = field.add("Box")
+        field.setNumber(f_box, "VIn", CURVATURE_BAND_SIZE_MIN)
+        field.setNumber(f_box, "VOut", CURVATURE_BAND_SIZE_MAX)
+        field.setNumber(f_box, "XMin", -1.0)
+        field.setNumber(f_box, "XMax", L + 1.0)
+        field.setNumber(f_box, "YMin", -y_extent)
+        field.setNumber(f_box, "YMax", y_extent)
+        field.setNumber(f_box, "ZMin", z_center - CURVATURE_BAND_HALF_THICKNESS_Z)
+        field.setNumber(f_box, "ZMax", z_center + CURVATURE_BAND_HALF_THICKNESS_Z)
+        curvature_boxes.append(f_box)
+
+    # 3) Combine trajectory + curvature-zone bands
     f_min = field.add("Min")
-    field.setNumbers(f_min, "FieldsList", [f_th_traj, f_box_midheight])
+    field.setNumbers(f_min, "FieldsList", [f_th_traj, *curvature_boxes])
 
     field.setAsBackgroundMesh(f_min)
 
