@@ -1,40 +1,51 @@
-# Titanic FEM Sandbox
+# Projet Titanic - Analyse d'avarie (FEM)
 
-Projet de simulation éléments finis (coques), centré sur un modèle coque.
+## But du projet
 
-- `grande_echelle/`: génération de maillage, solveur et post-traitement
-- `petite_echelle/`: calibration locale phase-field (fissuration)
+Ce projet sert a etudier, avec un modele elements finis simplifie, si la zone des rivets peut modifier
+la reponse mecanique de la coque lors d'un impact (deformation / endommagement).
 
-## Structure actuelle
+L'idee est de travailler a deux echelles :
 
-- `grande_echelle/main.py`: orchestration du calcul
-- `grande_echelle/config.py`: paramètres de simulation
-- `grande_echelle/model/shell.py`: modèle coque (cinématique + formes faibles)
-- `grande_echelle/solvers/quasi_static.py`: solveur quasi-statique
-- `grande_echelle/fem_io/mesh_io.py`: lecture/écriture I/O FEM
-- `grande_echelle/mesh.py`: génération Gmsh de la coque
-- `grande_echelle/mesh_ex.py`: générateur alternatif (profil I en arche)
-- `grande_echelle/loads.py`: fonctions de chargement
-- `grande_echelle/mesh/*.msh`: maillages
-- `grande_echelle/results/`: sorties VTK (ignorées par Git)
-- `petite_echelle/scripts/calibrate_phase_field.py`: génération de candidats `Gc/l0`
+- `grande_echelle/` : modele de coque (impact localise sur un segment de coque)
+- `petite_echelle/` : modele local de fissuration (phase-field) pour choisir des parametres `Gc` et `l0`
 
-## Exécution type
+## Fichiers principaux (version simplifiee)
 
-1. Générer le maillage:
+- `grande_echelle/mesh.py` : generation du maillage
+- `grande_echelle/main.py` : configuration + lecture maillage + lancement du calcul global
+- `grande_echelle/shell.py` : modele de coque (cinematique + materiaux)
+- `grande_echelle/quasi_static.py` : solveur quasi-statique + dommage
+- `petite_echelle/local_phase_field.py` : calcul local phase-field
+- `petite_echelle/phase_field_config.py` : parametres de calibration locale
+
+## Commandes utiles
+
+1. Generer le maillage
 
 ```bash
 python grande_echelle/mesh.py
 ```
 
-2. Lancer la simulation:
+2. Lancer le calcul global standard
 
 ```bash
 python grande_echelle/main.py
 ```
 
-## Prochaine phase recommandée
+3. Lancer le calcul local phase-field (utile pour la calibration)
 
-- Isoler les paramètres de simulation dans un module de configuration
-- Ajouter des tests minimaux sur `loads.py` et les routines géométriques
-- Ajouter un `pyproject.toml` pour exécution standardisée et dépendances explicites
+```bash
+python petite_echelle/local_phase_field.py
+```
+
+4. Comparaison avec / sans rivets : modifier dans `grande_echelle/main.py` la config de base
+
+- soit en gardant les proprietes rivets differentes (cas "avec effet rivets")
+- soit en mettant les memes proprietes que la coque (`rivet_* = shell_*`) pour un cas "sans effet rivets"
+
+## Sorties importantes
+
+- `run_metadata.json` : parametres du run
+- `quasi_static/monitor.csv` : evolution des indicateurs + temps de calcul par pas
+- `*.pvd` : champs a visualiser dans ParaView
