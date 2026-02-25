@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import csv
 import json
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 from mpi4py import MPI
@@ -32,6 +33,8 @@ class LocalPhaseFieldRunConfig:
     use_tension_compression_split: bool = True
     ksp_type: str = "preonly"
     pc_type: str = "lu"
+    ecrire_vtk_tous_les_n_pas: int = 1
+    afficher_console_tous_les_n_pas: int = 1
 
 
 def _load_baseline(config: LocalPhaseFieldRunConfig) -> tuple[float, float]:
@@ -190,11 +193,18 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Pat
             for step, tau in enumerate(time_values):
                 uy_top.x.array[:] = tau * config.uy_max_m
 
+                step_t0 = perf_counter()
+                mech_wall_s = 0.0
+                damage_wall_s = 0.0
                 for _ in range(config.n_alt_iters):
                     # Solve displacement with frozen damage
+                    mech_t0 = perf_counter()
                     problem_u.solve()
+                    mech_wall_s += perf_counter() - mech_t0
 
+                    damage_t0 = perf_counter()
                     problem_d.solve()
+                    damage_wall_s += perf_counter() - damage_t0
 
                     d_new = np.clip(d.x.array, 0.0, 1.0)
                     d_new = np.maximum(d_old.x.array, d_new)  # irreversibility
@@ -204,26 +214,43 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Pat
                     if increment < config.alt_tol:
                         break
 
-                disp_vtk.write_function(u, float(step))
-                dam_vtk.write_function(d, float(step))
+                if (step % config.ecrire_vtk_tous_les_n_pas == 0) or (step == config.n_steps):
+                    disp_vtk.write_function(u, float(step))
+                    dam_vtk.write_function(d, float(step))
 
                 max_u = np.linalg.norm(u.x.array, ord=np.inf)
                 max_d = float(np.max(d.x.array))
                 mean_d = float(np.mean(d.x.array))
                 frac_d95 = float(np.mean(d.x.array >= 0.95))
-                monitor_rows.append((step, tau, max_u, max_d, mean_d, frac_d95))
-                if MPI.COMM_WORLD.rank == 0:
+                step_wall_s = perf_counter() - step_t0
+                monitor_rows.append(
+                    (step, tau, max_u, max_d, mean_d, frac_d95, step_wall_s, mech_wall_s, damage_wall_s)
+                )
+                if MPI.COMM_WORLD.rank == 0 and (
+                    step % config.afficher_console_tous_les_n_pas == 0 or step == config.n_steps
+                ):
                     print(
                         f"Step {step}/{config.n_steps}, tau={tau:.3f}, "
                         f"max|u|={max_u:.3e}, max(d)={max_d:.3e}, "
-                        f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}"
+                        f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}, "
+                        f"temps_pas={step_wall_s:.2f}s (u={mech_wall_s:.2f}s, phase_field={damage_wall_s:.2f}s)"
                     )
 
     if MPI.COMM_WORLD.rank == 0:
         with (results_dir / "monitor.csv").open("w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(
-                ["step", "tau", "max_u_inf", "max_damage", "mean_damage", "frac_damage_ge_095"]
+                [
+                    "step",
+                    "tau",
+                    "max_u_inf",
+                    "max_damage",
+                    "mean_damage",
+                    "frac_damage_ge_095",
+                    "temps_pas_s",
+                    "temps_u_s",
+                    "temps_phase_field_s",
+                ]
             )
             writer.writerows(monitor_rows)
 

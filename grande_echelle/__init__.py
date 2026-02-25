@@ -1,2 +1,0 @@
-"""Grande echelle simulation package."""
-
