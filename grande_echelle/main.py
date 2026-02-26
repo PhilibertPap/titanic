@@ -21,15 +21,17 @@ except ImportError:  # pragma: no cover - script execution fallback
 def config_par_defaut() -> dict:
     iceberg_zone_x_debut_m = 177.0
     iceberg_zone_x_fin_m = 268.0
+    rivet_zone_x_debut_m = 177.0
+    rivet_zone_x_fin_m = 252.0
 
-    # 8 bandes rivets homogenisees, verticales (dirigees selon z) et
-    # reparties regulierement selon x dans la zone de passage de l'iceberg.
-    n_bandes_rivets_x = 8
+    # Bandes rivets homogenisees, verticales (dirigees selon z), limitees a la
+    # partie utile de la zone d'impact (on retire les plus en avant).
+    n_bandes_rivets_x = 6
     largeur_bande_x_m = 0.30
     x_margin = 0.5 * largeur_bande_x_m
     x_centres = np.linspace(
-        iceberg_zone_x_debut_m + x_margin,
-        iceberg_zone_x_fin_m - x_margin,
+        rivet_zone_x_debut_m + x_margin,
+        rivet_zone_x_fin_m - x_margin,
         n_bandes_rivets_x,
     )
     bandes_rivets = []
@@ -111,6 +113,8 @@ def config_par_defaut() -> dict:
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": bandes_rivets,
         "rivet_bandes_preset_file": None,
+        "rivet_bandes_x_min_m": rivet_zone_x_debut_m,
+        "rivet_bandes_x_max_m": rivet_zone_x_fin_m,
         # Solveurs PETSc
         "mechanics_petsc_options": None,
         "damage_petsc_options": None,
@@ -141,6 +145,10 @@ def verifier_config(cfg) -> None:
         cfg.bandes_rivets_z = []
     if not hasattr(cfg, "rivet_bandes_preset_file"):
         cfg.rivet_bandes_preset_file = None
+    if not hasattr(cfg, "rivet_bandes_x_min_m"):
+        cfg.rivet_bandes_x_min_m = None
+    if not hasattr(cfg, "rivet_bandes_x_max_m"):
+        cfg.rivet_bandes_x_max_m = None
     if not hasattr(cfg, "iceberg_max_dx_par_pas_m"):
         cfg.iceberg_max_dx_par_pas_m = None
     if not hasattr(cfg, "iceberg_contact_t_start"):
@@ -280,6 +288,25 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
     bandes = data.get("bandes_rivets_z")
     if not isinstance(bandes, list):
         raise ValueError(f"Invalid rivet preset format in {preset_path}: expected key 'bandes_rivets_z' (list)")
+
+    x_min = getattr(cfg, "rivet_bandes_x_min_m", None)
+    x_max = getattr(cfg, "rivet_bandes_x_max_m", None)
+    if x_min is not None or x_max is not None:
+        bandes_filtrees = []
+        for b in bandes:
+            x_c = b.get("x_centre_m")
+            if x_c is None:
+                bandes_filtrees.append(b)
+                continue
+            x_val = float(x_c)
+            if x_min is not None and x_val < float(x_min):
+                continue
+            if x_max is not None and x_val > float(x_max):
+                continue
+            bandes_filtrees.append(b)
+        if MPI.COMM_WORLD.rank == 0 and len(bandes_filtrees) != len(bandes):
+            print(f"Filtered rivet bands by x-range: kept {len(bandes_filtrees)}/{len(bandes)}")
+        bandes = bandes_filtrees
 
     cfg.bandes_rivets_z = bandes
     cfg.utiliser_bandes_rivets_z = True

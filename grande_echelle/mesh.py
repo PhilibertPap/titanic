@@ -46,7 +46,7 @@ Z_MIDSHIP_TOP_LIFT = 0.16
 # Longitudinal planform narrowing (half-breadth effect): long parallel mid-body and smoother ends
 MIDBODY_U0 = 0.14
 MIDBODY_U1 = 0.86
-END_TAPER_MIN = 0.16
+END_TAPER_MIN = 0.06
 
 # Loft sections (couples) along x
 N_SECTIONS_X = 11
@@ -58,6 +58,9 @@ ICEBERG_CENTER_Z = -7.5     # m, representative impact height (~3 m above hull b
 # Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
 ICEBERG_X_START = 177.0
 ICEBERG_X_END = 268.0
+# Restrict refinement to the sub-zone effectively used in the simulations.
+ICEBERG_REFINEMENT_X_START = 180.0
+ICEBERG_REFINEMENT_X_END = 255.0
 
 # Mesh size field (refine around the iceberg trajectory band)
 SIZE_MIN = 0.22
@@ -68,7 +71,9 @@ DIST_MAX = 6.5
 # Local refinement to resolve homogenized rivet bands represented as vertical
 # strips (directed along z) and distributed regularly in x within the iceberg
 # impact zone.
-N_RIVET_STRIPS_X = 8
+N_RIVET_STRIPS_X = 6
+RIVET_STRIP_X_START = 177.0
+RIVET_STRIP_X_END = 252.0
 RIVET_STRIP_PHYSICAL_WIDTH_X = 0.30
 RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
@@ -218,8 +223,8 @@ def _add_mesh_size_field(occ) -> None:
     # sample a 3D path at the impact depth across x (x+ -> x-).
     s_impact = max(0.0, min(1.0, (ICEBERG_CENTER_Z - Z_BOTTOM) / (Z_TOP - Z_BOTTOM)))
     v_impact = 2.0 * s_impact - 1.0
-    x_start = max(0.0, min(L, ICEBERG_X_START))
-    x_end = max(0.0, min(L, ICEBERG_X_END))
+    x_start = max(0.0, min(L, ICEBERG_REFINEMENT_X_START))
+    x_end = max(0.0, min(L, ICEBERG_REFINEMENT_X_END))
     if x_end < x_start:
         x_start, x_end = x_end, x_start
     u_start = x_start / L
@@ -263,9 +268,13 @@ def _add_mesh_size_field(occ) -> None:
         abs(ICEBERG_CENTER_Y),
     ) + RIVET_STRIP_MARGIN_Y
     x_margin = 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X
+    x_rivet_start = max(0.0, min(L, RIVET_STRIP_X_START))
+    x_rivet_end = max(0.0, min(L, RIVET_STRIP_X_END))
+    if x_rivet_end < x_rivet_start:
+        x_rivet_start, x_rivet_end = x_rivet_end, x_rivet_start
     x_centers = np.linspace(
-        x_start + x_margin,
-        x_end - x_margin,
+        x_rivet_start + x_margin,
+        x_rivet_end - x_margin,
         N_RIVET_STRIPS_X,
     )
     for x_center in x_centers:
