@@ -29,25 +29,11 @@ def _local_frame(domain):
     return e1, e2, e3
 
 
-def _vstack(vectors):
-    return ufl.as_matrix([[v[i] for i in range(len(v))] for v in vectors])
-
-
-def _hstack(vectors):
-    return _vstack(vectors).T
-
-
 def _make_dg0_scalar_function(domain, name: str, value: float):
     V0 = fem.functionspace(domain, ("DG", 0))
     field = fem.Function(V0, name=name)
     field.x.array[:] = value
     return field
-
-
-def _set_cells_value(field, cells, value: float):
-    if cells is None or len(cells) == 0:
-        return
-    field.x.array[cells] = value
 
 
 def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: float = 1.0):
@@ -92,9 +78,10 @@ def _build_material_fields(domain, cell_tags, cfg):
 
     if cell_tags is not None:
         rivet_cells = cell_tags.find(cfg.rivet_cell_tag)
-        _set_cells_value(E, rivet_cells, cfg.rivet_young_modulus)
-        _set_cells_value(nu, rivet_cells, cfg.rivet_poisson_ratio)
-        _set_cells_value(thick, rivet_cells, cfg.rivet_thickness)
+        if rivet_cells is not None and len(rivet_cells) > 0:
+            E.x.array[rivet_cells] = cfg.rivet_young_modulus
+            nu.x.array[rivet_cells] = cfg.rivet_poisson_ratio
+            thick.x.array[rivet_cells] = cfg.rivet_thickness
 
     if getattr(cfg, "utiliser_bandes_rivets_z", False):
         bandes = list(getattr(cfg, "bandes_rivets_z", []))
@@ -104,13 +91,6 @@ def _build_material_fields(domain, cell_tags, cfg):
         thick.x.array[:] *= facteur_t.x.array
 
     return E, nu, thick
-
-
-def _build_gc_factor_field(domain, cfg):
-    bandes = list(getattr(cfg, "bandes_rivets_z", [])) if getattr(cfg, "utiliser_bandes_rivets_z", False) else []
-    return _champ_facteur_bandes_rivets(domain, bandes, "facteur_Gc", 1.0)
-
-
 @dataclass
 class ShellModel:
     domain: any
@@ -136,6 +116,9 @@ class ShellModel:
 
 
 def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
+    # ------------------------------------------------------------
+    # 1) Geometrie / champs materiaux
+    # ------------------------------------------------------------
     gdim = domain.geometry.dim
     tdim = domain.topology.dim
     if facets is None:
@@ -168,12 +151,22 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     u_test, theta_test = ufl.split(v_test)
     dv = ufl.TrialFunction(V)
 
-    P_plane = _hstack([e1, e2])
+    # Matrice 3x2 de projection sur le plan tangent local [e1 e2]
+    P_plane = ufl.as_matrix(
+        [
+            [e1[0], e2[0]],
+            [e1[1], e2[1]],
+            [e1[2], e2[2]],
+        ]
+    )
 
     def t_grad(field):
         grad_field = ufl.grad(field)
         return ufl.dot(grad_field, P_plane)
 
+    # ------------------------------------------------------------
+    # 2) Cinematique coque (membrane / flexion / cisaillement)
+    # ------------------------------------------------------------
     t_gu = ufl.dot(P_plane.T, t_grad(u))
     eps = ufl.sym(t_gu)
     beta = ufl.cross(e3, theta)
@@ -187,10 +180,12 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     def plane_stress_elasticity(strain):
         return lmbda_ps * ufl.tr(strain) * ufl.Identity(tdim) + 2 * mu * strain
 
+    # Efforts generalises coque
     N = thick * plane_stress_elasticity(eps)
     M = thick**3 / 12 * plane_stress_elasticity(kappa)
     Q = mu * thick * gamma
 
+    # Stabilisation drilling rotation (forme simple)
     drilling_strain = (t_gu[0, 1] - t_gu[1, 0]) / 2 + ufl.dot(theta, e3)
     drilling_strain_test = ufl.replace(drilling_strain, {v: v_test})
     h_mesh = ufl.CellDiameter(domain)
@@ -202,7 +197,11 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     Vd = fem.functionspace(domain, ("CG", 1))
     damage_state = fem.Function(Vd, name="DamageState")
     damage_state.x.array[:] = 0.0
-    gc_factor_field = _build_gc_factor_field(domain, cfg)
+    if getattr(cfg, "utiliser_bandes_rivets_z", False):
+        bandes_gc = list(getattr(cfg, "bandes_rivets_z", []))
+    else:
+        bandes_gc = []
+    gc_factor_field = _champ_facteur_bandes_rivets(domain, bandes_gc, "facteur_Gc", 1.0)
     k_res_mech = fem.Constant(
         domain,
         cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
@@ -214,6 +213,9 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         edge_tags.extend([cfg.bottom_facet_tag, cfg.top_facet_tag])
     edge_tags = list(dict.fromkeys(edge_tags))
 
+    # ------------------------------------------------------------
+    # 3) Conditions aux limites
+    # ------------------------------------------------------------
     uD = fem.Function(Vu)
     thetaD = fem.Function(Vtheta)
     bcs = []
@@ -224,8 +226,8 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
             rot_dofs = fem.locate_dofs_topological((V.sub(1), Vtheta), 1, facets.find(facet_tag))
             bcs.append(fem.dirichletbc(thetaD, rot_dofs, V.sub(1)))
 
-    # Staggered global phase-field coupling: the mechanical tangent is degraded by the
-    # current damage state. The solver updates `damage_state` between load steps.
+    # Couplage staggered avec le phase-field global :
+    # la rigidite mecanique est degradee par le dommage courant.
     Wdef = (
         degradation
         * (

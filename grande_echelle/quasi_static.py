@@ -13,14 +13,6 @@ def moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0):
     return p0 * ufl.exp(-r2 / (2 * sigma**2))
 
 
-def _val_cfg(cfg, nouveau_nom, ancien_nom, default=None):
-    if hasattr(cfg, nouveau_nom):
-        return getattr(cfg, nouveau_nom)
-    if hasattr(cfg, ancien_nom):
-        return getattr(cfg, ancien_nom)
-    return default
-
-
 def _write_monitor_csv(path, rows):
     lines = [
         "step,time,max_u_inf,max_damage,mean_damage,frac_damage_ge_095,"
@@ -34,44 +26,14 @@ def _write_monitor_csv(path, rows):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _resolve_phase_field_params(cfg, phase_field_preset):
-    gc_value = cfg.phase_field_gc_j_m2
-    l0_value = cfg.phase_field_l0_m
-    if cfg.phase_field_use_selected_preset and phase_field_preset:
-        gc_value = float(phase_field_preset.get("Gc_J_m2", gc_value))
-        l0_value = float(phase_field_preset.get("l0_m", l0_value))
-    return gc_value, l0_value
-
-
-def _time_values(cfg):
-    # Option simple pour un pas de temps adapte:
-    # si cfg.temps_relatifs est fourni (liste de valeurs entre 0 et 1), on l'utilise.
-    # Sinon on garde un pas uniforme.
-    temps_relatifs = getattr(cfg, "temps_relatifs", None)
-    if temps_relatifs:
-        return cfg.t_final * np.array(temps_relatifs, dtype=float)
-    return np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
-
-
-def _solver_options(cfg, kind: str):
-    if kind == "mechanics":
-        return cfg.mechanics_petsc_options or cfg.petsc_options
-    if kind == "damage":
-        return cfg.damage_petsc_options or cfg.petsc_options
-    raise ValueError(f"Unknown solver kind: {kind}")
-
-
-def _positive_part(x):
-    return 0.5 * (x + ufl.sqrt(x * x))
-
-
-def _deviatoric_2d(tensor):
-    return tensor - (ufl.tr(tensor) / 2.0) * ufl.Identity(2)
-
-
 def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     domain = model.domain
     t = fem.Constant(domain, 0.0)
+    zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
+
+    # ------------------------------------------------------------
+    # 1) Parametres geometriques utiles pour definir la zone d'impact
+    # ------------------------------------------------------------
 
     comm = domain.comm
     xmin = comm.allreduce(domain.geometry.x[:, 0].min(), op=MPI.MIN)
@@ -113,8 +75,10 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     sigma = fem.Constant(domain, cfg.sigma)
     p0 = fem.Constant(domain, 0.0 if getattr(cfg, "ramp_amplitude_iceberg", False) else cfg.pressure_peak)
 
-    # Default: no external Neumann load (used for Dirichlet-driven iceberg mode)
-    zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
+    # ------------------------------------------------------------
+    # 2) Chargement externe (pression ou deplacement impose)
+    # ------------------------------------------------------------
+    # Par defaut: pas de force volumique/surfacique (cas pilotage Dirichlet).
     L = ufl.dot(zero_vec, model.u_test) * ufl.dx
     extra_bcs = []
     if cfg.iceberg_loading == "neumann_pressure":
@@ -144,15 +108,19 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             "Expected 'neumann_pressure' or 'dirichlet_displacement'."
         )
 
+    mechanics_petsc_options = cfg.mechanics_petsc_options or cfg.petsc_options
     problem = dolfinx.fem.petsc.LinearProblem(
         model.a,
         L,
         u=model.v,
         bcs=model.bcs + extra_bcs,
-        petsc_options=_solver_options(cfg, "mechanics"),
+        petsc_options=mechanics_petsc_options,
         petsc_options_prefix="coque",
     )
 
+    # ------------------------------------------------------------
+    # 3) Variables de sortie / dommage global (phase-field)
+    # ------------------------------------------------------------
     u_out = fem.Function(model.Vu, name="Displacement")
     theta_out = fem.Function(model.Vtheta, name="Rotation")
     Vd = model.Vd
@@ -166,7 +134,12 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
 
     damage_enabled = cfg.enable_global_phase_field
     if damage_enabled:
-        gc_value, l0_value = _resolve_phase_field_params(cfg, phase_field_preset)
+        gc_value = cfg.phase_field_gc_j_m2
+        l0_value = cfg.phase_field_l0_m
+        if cfg.phase_field_use_selected_preset and phase_field_preset:
+            gc_value = float(phase_field_preset.get("Gc_J_m2", gc_value))
+            l0_value = float(phase_field_preset.get("l0_m", l0_value))
+
         gc = fem.Function(model.gc_factor_field.function_space, name="GcField")
         gc.x.array[:] = gc_value * model.gc_factor_field.x.array
         l0 = fem.Constant(domain, l0_value)
@@ -187,8 +160,9 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
         lmbda_ps = 2 * lmbda * mu / (lmbda + 2 * mu)
         if getattr(cfg, "phase_field_split_traction_compression", False):
             tr_eps = ufl.tr(eps)
-            dev_eps = _deviatoric_2d(eps)
-            psi_drive_expr = 0.5 * lmbda_ps * _positive_part(tr_eps) ** 2 + mu * ufl.inner(dev_eps, dev_eps)
+            dev_eps = eps - (ufl.tr(eps) / 2.0) * ufl.Identity(2)
+            tr_eps_pos = 0.5 * (tr_eps + ufl.sqrt(tr_eps * tr_eps))
+            psi_drive_expr = 0.5 * lmbda_ps * tr_eps_pos ** 2 + mu * ufl.inner(dev_eps, dev_eps)
         else:
             psi_drive_expr = 0.5 * lmbda_ps * ufl.tr(eps) ** 2 + mu * ufl.inner(eps, eps)
         psi_drive = fem.Function(Vd, name="PsiDrive")
@@ -207,19 +181,44 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             u=damage,
             bcs=[],
             petsc_options_prefix="coque_damage",
-            petsc_options=_solver_options(cfg, "damage"),
+            petsc_options=cfg.damage_petsc_options or cfg.petsc_options,
         )
     else:
         psi_drive = None
         psi_eval = None
         damage_problem = None
 
-    time_steps = _time_values(cfg)
+    # ------------------------------------------------------------
+    # 4) Discretisation en temps + sorties
+    # ------------------------------------------------------------
+    temps_relatifs = getattr(cfg, "temps_relatifs", None)
+    if temps_relatifs:
+        time_steps = cfg.t_final * np.array(temps_relatifs, dtype=float)
+    else:
+        time_steps = np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
+
+    ecrire_vtk_tous_les_n_pas = int(
+        getattr(
+            cfg,
+            "ecrire_vtk_tous_les_n_pas",
+            getattr(cfg, "vtk_write_stride", 1),
+        )
+    )
+    afficher_console_tous_les_n_pas = int(
+        getattr(
+            cfg,
+            "afficher_console_tous_les_n_pas",
+            getattr(cfg, "monitor_print_stride", 1),
+        )
+    )
     monitor_rows = []
 
     with io.VTKFile(MPI.COMM_WORLD, output_layout["displacement_file"], "w") as disp_vtk:
         with io.VTKFile(MPI.COMM_WORLD, output_layout["rotation_file"], "w") as rot_vtk:
             with io.VTKFile(MPI.COMM_WORLD, output_layout["damage_file"], "w") as damage_vtk:
+                # ------------------------------------------------------------
+                # 5) Boucle en temps quasi-statique
+                # ------------------------------------------------------------
                 for n, tn in enumerate(time_steps):
                     step_t0 = perf_counter()
                     mech_wall_s = 0.0
@@ -278,7 +277,6 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     else:
                         damage.x.array[:] = 0.0
 
-                    ecrire_vtk_tous_les_n_pas = int(_val_cfg(cfg, "ecrire_vtk_tous_les_n_pas", "vtk_write_stride", 1))
                     if (n % ecrire_vtk_tous_les_n_pas == 0) or (n == len(time_steps) - 1):
                         disp_vtk.write_function(u_out, tn)
                         rot_vtk.write_function(theta_out, tn)
@@ -303,7 +301,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                         )
                     )
                     if MPI.COMM_WORLD.rank == 0 and (
-                        n % int(_val_cfg(cfg, "afficher_console_tous_les_n_pas", "monitor_print_stride", 1)) == 0
+                        n % afficher_console_tous_les_n_pas == 0
                         or n == len(time_steps) - 1
                     ):
                         print(

@@ -44,10 +44,6 @@ END_TAPER_MIN = 0.22
 N_SECTIONS_X = 11
 N_SECTION_PTS = 13
 
-# B-spline control net (geometry smoothness, not mesh density)
-NU_CTRL = 24
-NV_CTRL = 10
-
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
 ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
@@ -191,14 +187,16 @@ def _add_mesh_size_field(occ) -> None:
         x_start, x_end = x_end, x_start
     u_start = x_start / L
     u_end = x_end / L
+    _, y_shell_ref, _ = hull_xyz(0.5, v_impact)
+    y_shift = ICEBERG_CENTER_Y - y_shell_ref
 
     path_points = []
     for k in range(41):
         # Sample only the longitudinal zone where the iceberg is assumed to act.
         u = u_end + (u_start - u_end) * (k / 40.0)
         x, y_shell, z = hull_xyz(u, v_impact)
-        # Shift slightly outward/inward so the distance field stays centered on the target band
-        y = y_shell + (ICEBERG_CENTER_Y - hull_xyz(0.5, v_impact)[1])
+        # Decalage lateral pour centrer la bande de raffinement sur la trajectoire cible.
+        y = y_shell + y_shift
         path_points.append(occ.addPoint(x, y, z))
     traj = occ.addSpline(path_points)
     occ.synchronize()
@@ -217,11 +215,8 @@ def _add_mesh_size_field(occ) -> None:
     field.setNumber(f_th_traj, "DistMin", DIST_MIN)
     field.setNumber(f_th_traj, "DistMax", DIST_MAX)
 
-    # 2) Extra refinement in the iceberg longitudinal zone (not all x): narrow
-    # horizontal bands centered on the strongest curvature zones.
-    # on the strongest curvature zones of the transverse profile (bilge and
-    # lower-flank transition). This keeps the "all x" refinement but avoids
-    # over-refining the full height.
+    # 2) Raffinement supplementaire dans la zone longitudinale d'impact :
+    # bandes horizontales autour des zones de forte courbure (bouchain + flanc).
     y_extent = 1.2 * max(
         abs(Y_WATERLINE_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
         abs(Y_DECK_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
@@ -266,8 +261,10 @@ def main():
     gmsh.model.add("titanic_hull_segment")
     occ = gmsh.model.occ
 
+    # 1) Geometrie coque
     surf, edges = _build_smooth_hull_surface(occ)
 
+    # 2) Groupes physiques (tags utilises ensuite par le solveur)
     gmsh.model.addPhysicalGroup(2, [surf], SHELL_CELL_TAG)
     gmsh.model.setPhysicalName(2, SHELL_CELL_TAG, "HullPlate")
 
@@ -285,8 +282,10 @@ def main():
         gmsh.model.addPhysicalGroup(1, edges["top"], 4)
         gmsh.model.setPhysicalName(1, 4, "Top")
 
+    # 3) Champ de taille de maille (raffinement pres de la trajectoire iceberg)
     _add_mesh_size_field(occ)
 
+    # 4) Generation / export du maillage surfacique
     gmsh.model.mesh.generate(2)
     gmsh.write(filename + ".msh")
     gmsh.finalize()

@@ -18,16 +18,14 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 
 def config_par_defaut() -> dict:
-    # Bandes de rivets "homogeneisees" (approximation grande echelle):
-    # on place des bandes horizontales selon z (strakes/seams), autour de la zone immergee.
-    # Valeurs par defaut prudentes et modifiables.
+    # Bandes de rivets "homogeneisees" (approximation grande echelle).
     bandes_rivets = []
     for z_centre in (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9):
         bandes_rivets.append(
             {
                 "nom": f"bande_z_{z_centre:+.1f}m".replace(".", "p"),
                 "z_centre_m": z_centre,
-                "largeur_m": 0.30,  # zone influencee (homogeneisee), pas juste le diametre du rivet
+                "largeur_m": 0.30,
                 "facteur_E": 0.98,
                 "facteur_epaisseur": 1.00,
                 "facteur_Gc": 0.88,
@@ -35,11 +33,13 @@ def config_par_defaut() -> dict:
         )
 
     return {
+        # Maillage / sorties
         "mesh_stem": "mesh/coque",
         "results_root": "results",
         "case_name": "titanic",
         "shell_cell_tag": 1,
         "rivet_cell_tag": 2,
+        # Materiau coque / rivets homogenises
         "shell_thickness": 2.5e-2,
         "shell_young_modulus": 210e9,
         "shell_poisson_ratio": 0.3,
@@ -49,29 +49,28 @@ def config_par_defaut() -> dict:
         "shell_yield_strength_pa": 270e6,
         "shell_ultimate_strength_pa": 431e6,
         "steel_sulfur_mass_fraction": 0.00065,
+        # Chargement iceberg (ordre de grandeur prudent)
         "sigma": 3.0,
-        # Pression de contact homogeneisee (ordre de grandeur prudent):
-        # ~0.1 a 0.3 MPa dans des estimations de collision/glissement Titanic.
         "pressure_peak": 2.0e5,
         "iceberg_loading": "dirichlet_displacement",
         "ramp_amplitude_iceberg": True,
         "iceberg_disp_peak": 2.0e-2,
         "iceberg_disp_sign": 1.0,
         "iceberg_patch_radius_factor": 3.0,
+        # Temps
         "t_final": 1.0,
         "num_steps": 20,
         "ecrire_vtk_tous_les_n_pas": 1,
         "afficher_console_tous_les_n_pas": 1,
+        # CL sur les bords tags Gmsh
         "left_facet_tag": 1,
         "right_facet_tag": 2,
         "bottom_facet_tag": 3,
         "top_facet_tag": 4,
         "clamp_all_edges": True,
         "clamp_rotations": True,
+        # Zone d'impact / trajectoire
         "iceberg_center_y": -10.8,
-        # Zone de contact longitudinale (x) : la collision/fissuration ne concerne pas toute la longueur.
-        # On prend par defaut ~300 ft ~ 91 m de zone potentiellement endommagee (ordre de grandeur Wilding/inquiries),
-        # localisee vers l'avant.
         "iceberg_zone_x_debut_m": 0.0,
         "iceberg_zone_x_fin_m": 92.0,
         "waterline_z": 0.0,
@@ -79,6 +78,7 @@ def config_par_defaut() -> dict:
         "iceberg_moves_from_xmax_to_xmin": True,
         "y_mid_factor": 0.9,
         "z_mid_factor": 0.2,
+        # Phase-field global
         "phase_field_preset_file": "petite_echelle/results/local_phase_field_sweep/selected_preset.json",
         "enable_global_phase_field": True,
         "phase_field_use_selected_preset": True,
@@ -86,13 +86,12 @@ def config_par_defaut() -> dict:
         "phase_field_l0_m": 0.4,
         "phase_field_residual_stiffness": 1e-6,
         "phase_field_split_traction_compression": True,
-        # Seuil simple de nucleation (energie volumique) pour eviter le dommage
-        # "instantane" a cause du bruit numerique / d'un chargement trop abrupt.
         "phase_field_seuil_nucleation_j_m3": 8.0e4,
-        # Frequence de mise a jour du dommage global (1 = tous les pas)
         "phase_field_mise_a_jour_tous_les_n_pas": 1,
+        # Homogeneisation des rivets en bandes selon z
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": bandes_rivets,
+        # Solveurs PETSc
         "mechanics_petsc_options": None,
         "damage_petsc_options": None,
         "petsc_options": {"ksp_type": "preonly", "pc_type": "lu"},
@@ -107,10 +106,14 @@ def creer_config(**updates):
 
 def config_vers_dict(cfg) -> dict:
     data = dict(vars(cfg))
+
+    # Compatibilite anciens noms
     if "ecrire_vtk_tous_les_n_pas" not in data and "vtk_write_stride" in data:
         data["ecrire_vtk_tous_les_n_pas"] = data["vtk_write_stride"]
     if "afficher_console_tous_les_n_pas" not in data and "monitor_print_stride" in data:
         data["afficher_console_tous_les_n_pas"] = data["monitor_print_stride"]
+
+    # Solveurs separes si non renseignes
     if data.get("mechanics_petsc_options") is None:
         data["mechanics_petsc_options"] = dict(data["petsc_options"])
     if data.get("damage_petsc_options") is None:
@@ -169,12 +172,6 @@ def config_etude_rivets(with_rivets: bool, base=None):
 
 
 def config_etude_rivets_rapide(with_rivets: bool = True):
-    """
-    Preset de travail rapide:
-    - moins d'ecritures VTK
-    - moins d'affichage console
-    - moins de pas de temps
-    """
     base = creer_config(
         case_name="titanic_rivets_rapide",
         num_steps=20,
@@ -182,10 +179,10 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
         afficher_console_tous_les_n_pas=2,
         pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
-        # Exemple de pas adaptes simples (plus denses au milieu de l'impact)
+        # Pas adaptes simples (plus denses autour du pic de chargement)
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
-            0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0
+            0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0,
         ],
         phase_field_mise_a_jour_tous_les_n_pas=1,
     )
@@ -193,12 +190,6 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
 
 
 def config_etude_rivets_production(with_rivets: bool = True):
-    """
-    Preset plus propre pour comparaison finale:
-    - plus de pas
-    - ecriture VTK a chaque pas
-    - solveurs separes meca / phase-field
-    """
     base = creer_config(
         case_name="titanic_rivets_production",
         num_steps=36,
@@ -206,40 +197,59 @@ def config_etude_rivets_production(with_rivets: bool = True):
         afficher_console_tous_les_n_pas=3,
         pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
-        # Plus de points autour de la zone centrale de chargement
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
             0.50, 0.54, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.82, 0.86,
-            0.90, 0.94, 0.97, 1.0
+            0.90, 0.94, 0.97, 1.0,
         ],
-        # A ajuster selon votre machine / installation PETSc
         mechanics_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
         damage_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
 
-def lire_maillage(mesh_stem: str, comm=MPI.COMM_WORLD):
-    candidate = Path(mesh_stem)
-    candidates = []
-    if candidate.is_absolute():
-        candidates.append(candidate.with_suffix(".msh"))
+def lancer_calcul(cfg=None):
+    cfg = DEFAULT_CONFIG if cfg is None else cfg
+    verifier_config(cfg)
+
+    # ------------------------------------------------------------
+    # 1) Lecture du maillage
+    # ------------------------------------------------------------
+    candidat = Path(cfg.mesh_stem)
+    if candidat.is_absolute():
+        mesh_candidates = [candidat.with_suffix(".msh")]
     else:
-        candidates.append((Path.cwd() / candidate).with_suffix(".msh"))
-        candidates.append((Path(__file__).resolve().parent / candidate).with_suffix(".msh"))
-    mesh_path = next((p for p in candidates if p.exists()), None)
+        mesh_candidates = [
+            (Path.cwd() / candidat).with_suffix(".msh"),
+            (Path(__file__).resolve().parent / candidat).with_suffix(".msh"),
+        ]
+    mesh_path = next((p for p in mesh_candidates if p.exists()), None)
     if mesh_path is None:
-        raise FileNotFoundError(f"Mesh file not found. Tried: {', '.join(str(p) for p in candidates)}")
-    return io.gmsh.read_from_msh(str(mesh_path), comm)
+        raise FileNotFoundError(
+            f"Mesh file not found. Tried: {', '.join(str(p) for p in mesh_candidates)}"
+        )
 
+    meshdata = io.gmsh.read_from_msh(str(mesh_path), MPI.COMM_WORLD)
+    domain = meshdata.mesh
+    cell_tags = meshdata.cell_tags
+    facets = meshdata.facet_tags
 
-def preparer_dossiers_resultats(results_root: str | Path, case_name: str) -> dict[str, Path]:
-    base_dir = Path(results_root) / case_name
+    cell_values = [] if cell_tags is None else [int(v) for v in np.unique(cell_tags.values)]
+    facet_values = [] if facets is None else [int(v) for v in np.unique(facets.values)]
+    print(f"Mesh diagnostics: gdim={domain.geometry.dim}, tdim={domain.topology.dim}")
+    print(f"Cell tags present: {cell_tags is not None}; values={cell_values}")
+    print(f"Facet tags present: {facets is not None}; values={facet_values}")
+
+    # ------------------------------------------------------------
+    # 2) Dossiers de sortie
+    # ------------------------------------------------------------
+    base_dir = Path(cfg.results_root) / cfg.case_name
     local_frame_dir = base_dir / "local_frame"
     quasi_static_dir = base_dir / "quasi_static"
     local_frame_dir.mkdir(exist_ok=True, parents=True)
     quasi_static_dir.mkdir(exist_ok=True, parents=True)
-    return {
+
+    output_layout = {
         "base_dir": base_dir,
         "local_frame_dir": local_frame_dir,
         "quasi_static_dir": quasi_static_dir,
@@ -251,82 +261,58 @@ def preparer_dossiers_resultats(results_root: str | Path, case_name: str) -> dic
         "metadata_file": base_dir / "run_metadata.json",
     }
 
-
-def ecrire_base_locale(local_frame_file: Path, e1, e2, e3) -> None:
-    with io.VTKFile(MPI.COMM_WORLD, local_frame_file, "w") as vtk:
-        vtk.write_function(e1, 0.0)
-        vtk.write_function(e2, 0.0)
-        vtk.write_function(e3, 0.0)
-
-
-def ecrire_zones_materiaux(material_file: Path, domain, cell_tags, default_tag: int) -> None:
-    V0 = fem.functionspace(domain, ("DG", 0))
-    material_regions = fem.Function(V0, name="MaterialRegion")
-    material_regions.x.array[:] = float(default_tag)
-    if cell_tags is not None and len(cell_tags.indices) > 0:
-        material_regions.x.array[cell_tags.indices] = cell_tags.values.astype(float)
-    with io.VTKFile(MPI.COMM_WORLD, material_file, "w") as vtk:
-        vtk.write_function(material_regions, 0.0)
-
-
-def lire_preset_phase_field(cfg) -> tuple[dict | None, Path | None, list[Path]]:
+    # ------------------------------------------------------------
+    # 3) Preset phase-field (optionnel)
+    # ------------------------------------------------------------
     preset_cfg_path = Path(cfg.phase_field_preset_file)
     if preset_cfg_path.is_absolute():
-        candidates = [preset_cfg_path]
+        preset_candidates = [preset_cfg_path]
     else:
-        candidates = [Path.cwd() / preset_cfg_path, Path(__file__).resolve().parent / preset_cfg_path]
-    preset_path = next((p for p in candidates if p.exists()), None)
+        preset_candidates = [
+            Path.cwd() / preset_cfg_path,
+            Path(__file__).resolve().parent / preset_cfg_path,
+        ]
+    preset_path = next((p for p in preset_candidates if p.exists()), None)
     if preset_path is None:
-        return None, None, candidates
-    return json.loads(preset_path.read_text(encoding="utf-8")), preset_path, candidates
-
-
-def afficher_infos_maillage(domain, cell_tags, facets) -> None:
-    cell_values = [] if cell_tags is None else [int(v) for v in np.unique(cell_tags.values)]
-    facet_values = [] if facets is None else [int(v) for v in np.unique(facets.values)]
-    print(f"Mesh diagnostics: gdim={domain.geometry.dim}, tdim={domain.topology.dim}")
-    print(f"Cell tags present: {cell_tags is not None}; values={cell_values}")
-    print(f"Facet tags present: {facets is not None}; values={facet_values}")
-
-
-def ecrire_metadonnees_run(metadata_file: Path, cfg, phase_field_preset: dict | None) -> None:
-    if MPI.COMM_WORLD.rank != 0:
-        return
-    metadata = {
-        "metadata_schema": "titanic-fem-run/v1",
-        "created_utc": datetime.now(timezone.utc).isoformat(),
-        "config": config_vers_dict(cfg),
-        "phase_field_preset": phase_field_preset,
-    }
-    metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-
-
-def lancer_calcul(cfg=None):
-    cfg = DEFAULT_CONFIG if cfg is None else cfg
-    verifier_config(cfg)
-
-    meshdata = lire_maillage(cfg.mesh_stem)
-    domain = meshdata.mesh
-    cell_tags = meshdata.cell_tags
-    facets = meshdata.facet_tags
-    afficher_infos_maillage(domain, cell_tags, facets)
-
-    model = build_shell_model(domain, cell_tags, facets, cfg)
-    output_layout = preparer_dossiers_resultats(cfg.results_root, cfg.case_name)
-    phase_field_preset, preset_path, preset_candidates = lire_preset_phase_field(cfg)
-    if preset_path is not None:
-        print(f"Using phase-field preset: {preset_path}")
-    else:
+        phase_field_preset = None
         print(f"Phase-field preset not found. Tried: {preset_candidates}")
+    else:
+        phase_field_preset = json.loads(preset_path.read_text(encoding="utf-8"))
+        print(f"Using phase-field preset: {preset_path}")
 
-    ecrire_base_locale(output_layout["local_frame_file"], model.e1, model.e2, model.e3)
-    ecrire_zones_materiaux(
-        output_layout["local_frame_dir"] / "material_regions.pvd",
-        domain,
-        cell_tags,
-        cfg.shell_cell_tag,
-    )
-    ecrire_metadonnees_run(output_layout["metadata_file"], cfg, phase_field_preset)
+    # ------------------------------------------------------------
+    # 4) Modele coque + fichiers de diagnostic
+    # ------------------------------------------------------------
+    model = build_shell_model(domain, cell_tags, facets, cfg)
+
+    with io.VTKFile(MPI.COMM_WORLD, output_layout["local_frame_file"], "w") as vtk:
+        vtk.write_function(model.e1, 0.0)
+        vtk.write_function(model.e2, 0.0)
+        vtk.write_function(model.e3, 0.0)
+
+    V0 = fem.functionspace(domain, ("DG", 0))
+    material_regions = fem.Function(V0, name="MaterialRegion")
+    material_regions.x.array[:] = float(cfg.shell_cell_tag)
+    if cell_tags is not None and len(cell_tags.indices) > 0:
+        material_regions.x.array[cell_tags.indices] = cell_tags.values.astype(float)
+    with io.VTKFile(MPI.COMM_WORLD, local_frame_dir / "material_regions.pvd", "w") as vtk:
+        vtk.write_function(material_regions, 0.0)
+
+    # ------------------------------------------------------------
+    # 5) Metadonnees + calcul quasi-statique
+    # ------------------------------------------------------------
+    if MPI.COMM_WORLD.rank == 0:
+        metadata = {
+            "metadata_schema": "titanic-fem-run/v1",
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "config": config_vers_dict(cfg),
+            "phase_field_preset": phase_field_preset,
+        }
+        output_layout["metadata_file"].write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+
     run_quasi_static(model, cfg, output_layout, phase_field_preset=phase_field_preset)
 
 
