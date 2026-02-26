@@ -3,7 +3,7 @@ import gmsh
 
 filename = "mesh/coque"
 SHELL_CELL_TAG = 1
-RIVET_CELL_TAG = 2  # kept for compatibility with the solver configuration
+RIVET_CELL_TAG = 2
 
 
 # Geometry scales for a Titanic-like half-hull shell surface
@@ -52,18 +52,29 @@ ICEBERG_X_START = 0.0
 ICEBERG_X_END = 92.0
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.25
-SIZE_MAX = 2.20
-DIST_MIN = 1.0
-DIST_MAX = 5.5
+SIZE_MIN = 0.35
+SIZE_MAX = 2.60
+DIST_MIN = 1.2
+DIST_MAX = 6.5
 
 # Extra refinement in horizontal bands (all x) centered on the main transverse
 # curvature zones of the shell section (bilge + flank/flare transition).
-CURVATURE_BAND_SIZE_MIN = 0.45
-CURVATURE_BAND_SIZE_MAX = 2.20
+CURVATURE_BAND_SIZE_MIN = 0.60
+CURVATURE_BAND_SIZE_MAX = 2.60
 CURVATURE_BAND_HALF_THICKNESS_Z = 0.70
 CURVATURE_BAND_MARGIN_Y = 1.0
 CURVATURE_BAND_MARGIN_X = 8.0
+
+# Local refinement to resolve homogenized rivet bands (8 rows along z) without
+# globally over-refining the whole hull patch. Band width is kept realistic
+# (about 0.30 m) and only the impact longitudinal zone is refined.
+RIVET_BAND_Z_CENTERS = (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9)
+RIVET_BAND_PHYSICAL_WIDTH_Z = 0.30
+RIVET_BAND_REFINE_HALF_THICKNESS_Z = 0.22
+RIVET_BAND_SIZE_MIN = 0.12
+RIVET_BAND_SIZE_MAX = 2.60
+RIVET_BAND_MARGIN_X = 4.0
+RIVET_BAND_MARGIN_Y = 0.8
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -244,9 +255,33 @@ def _add_mesh_size_field(occ) -> None:
         field.setNumber(f_box, "ZMax", z_center + CURVATURE_BAND_HALF_THICKNESS_Z)
         curvature_boxes.append(f_box)
 
-    # 3) Combine trajectory + curvature-zone bands
+    # 3) Refinement around the 8 homogenized rivet bands (same z-centers as
+    # grande_echelle/main.py default bands) in the impact longitudinal window.
+    rivet_band_boxes = []
+    y_extent_rivet = 1.1 * max(abs(ICEBERG_CENTER_Y), abs(y_shell_ref)) + RIVET_BAND_MARGIN_Y
+    for z_center in RIVET_BAND_Z_CENTERS:
+        f_box = field.add("Box")
+        field.setNumber(f_box, "VIn", RIVET_BAND_SIZE_MIN)
+        field.setNumber(f_box, "VOut", RIVET_BAND_SIZE_MAX)
+        field.setNumber(f_box, "XMin", x_start - RIVET_BAND_MARGIN_X)
+        field.setNumber(f_box, "XMax", x_end + RIVET_BAND_MARGIN_X)
+        field.setNumber(f_box, "YMin", -y_extent_rivet)
+        field.setNumber(f_box, "YMax", y_extent_rivet)
+        field.setNumber(
+            f_box,
+            "ZMin",
+            z_center - max(0.5 * RIVET_BAND_PHYSICAL_WIDTH_Z, RIVET_BAND_REFINE_HALF_THICKNESS_Z),
+        )
+        field.setNumber(
+            f_box,
+            "ZMax",
+            z_center + max(0.5 * RIVET_BAND_PHYSICAL_WIDTH_Z, RIVET_BAND_REFINE_HALF_THICKNESS_Z),
+        )
+        rivet_band_boxes.append(f_box)
+
+    # 4) Combine trajectory + curvature-zone bands + rivet-band boxes
     f_min = field.add("Min")
-    field.setNumbers(f_min, "FieldsList", [f_th_traj, *curvature_boxes])
+    field.setNumbers(f_min, "FieldsList", [f_th_traj, *curvature_boxes, *rivet_band_boxes])
 
     field.setAsBackgroundMesh(f_min)
 

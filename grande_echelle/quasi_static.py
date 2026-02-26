@@ -195,7 +195,13 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     # 4) Discretisation en temps + sorties
     # ------------------------------------------------------------
     temps_relatifs = getattr(cfg, "temps_relatifs", None)
-    if temps_relatifs:
+    dx_max_par_pas = getattr(cfg, "iceberg_max_dx_par_pas_m", None)
+    if dx_max_par_pas is not None and float(dx_max_par_pas) > 0.0:
+        longueur_parcours = abs(x1 - x0)
+        n_intervalles_min = int(np.ceil(longueur_parcours / float(dx_max_par_pas))) if longueur_parcours > 0 else 1
+        n_intervalles = max(int(cfg.num_steps), n_intervalles_min)
+        time_steps = np.linspace(0.0, cfg.t_final, n_intervalles + 1)
+    elif temps_relatifs:
         time_steps = cfg.t_final * np.array(temps_relatifs, dtype=float)
     else:
         time_steps = np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)

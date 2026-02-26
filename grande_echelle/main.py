@@ -81,6 +81,7 @@ def config_par_defaut() -> dict:
         "waterline_z": 0.0,
         "iceberg_depth_below_waterline": 7.5,
         "iceberg_moves_from_xmax_to_xmin": True,
+        "iceberg_max_dx_par_pas_m": None,
         "y_mid_factor": 0.9,
         "z_mid_factor": 0.2,
         # Phase-field global
@@ -139,6 +140,8 @@ def verifier_config(cfg) -> None:
         cfg.bandes_rivets_z = []
     if not hasattr(cfg, "rivet_bandes_preset_file"):
         cfg.rivet_bandes_preset_file = None
+    if not hasattr(cfg, "iceberg_max_dx_par_pas_m"):
+        cfg.iceberg_max_dx_par_pas_m = None
     if not hasattr(cfg, "write_local_frame_outputs"):
         cfg.write_local_frame_outputs = True
     if not hasattr(cfg, "write_rotation_vtk"):
@@ -201,6 +204,7 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
             0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0,
         ],
         phase_field_mise_a_jour_tous_les_n_pas=1,
+        iceberg_max_dx_par_pas_m=1.0,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
@@ -220,6 +224,7 @@ def config_etude_rivets_production(with_rivets: bool = True):
         ],
         mechanics_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
         damage_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+        iceberg_max_dx_par_pas_m=0.5,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
@@ -235,6 +240,7 @@ def config_etude_rivets_screening(with_rivets: bool = True):
         write_rotation_vtk=False,
         write_damage_vtk=False,
         phase_field_mise_a_jour_tous_les_n_pas=2,
+        iceberg_max_dx_par_pas_m=3.0,
         pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
     )
@@ -338,6 +344,15 @@ def analyser_monitor_csv(monitor_csv_file) -> dict:
     return out
 
 
+def _print_field_min_max(name: str, field) -> None:
+    local_min = float(np.min(field.x.array)) if field.x.array.size else np.inf
+    local_max = float(np.max(field.x.array)) if field.x.array.size else -np.inf
+    gmin = field.function_space.mesh.comm.allreduce(local_min, op=MPI.MIN)
+    gmax = field.function_space.mesh.comm.allreduce(local_max, op=MPI.MAX)
+    if field.function_space.mesh.comm.rank == 0:
+        print(f"{name}: min={gmin:.6g}, max={gmax:.6g}")
+
+
 def lancer_calcul(cfg=None):
     cfg = DEFAULT_CONFIG if cfg is None else cfg
     verifier_config(cfg)
@@ -415,6 +430,10 @@ def lancer_calcul(cfg=None):
     # 4) Modele coque + fichiers de diagnostic
     # ------------------------------------------------------------
     model = build_shell_model(domain, cell_tags, facets, cfg)
+    _print_field_min_max("YoungModulus", model.E_field)
+    _print_field_min_max("Thickness", model.thick_field)
+    _print_field_min_max("GcFactorBandes", model.gc_factor_field)
+    _print_field_min_max("RivetBandsMask", model.rivet_bands_mask_field)
 
     if bool(getattr(cfg, "write_local_frame_outputs", True)):
         with io.VTKFile(MPI.COMM_WORLD, output_layout["local_frame_file"], "w") as vtk:
@@ -429,6 +448,12 @@ def lancer_calcul(cfg=None):
             material_regions.x.array[cell_tags.indices] = cell_tags.values.astype(float)
         with io.VTKFile(MPI.COMM_WORLD, local_frame_dir / "material_regions.pvd", "w") as vtk:
             vtk.write_function(material_regions, 0.0)
+
+        with io.VTKFile(MPI.COMM_WORLD, local_frame_dir / "material_fields.pvd", "w") as vtk:
+            vtk.write_function(model.E_field, 0.0)
+            vtk.write_function(model.thick_field, 0.0)
+            vtk.write_function(model.gc_factor_field, 0.0)
+            vtk.write_function(model.rivet_bands_mask_field, 0.0)
 
     # ------------------------------------------------------------
     # 5) Metadonnees + calcul quasi-statique

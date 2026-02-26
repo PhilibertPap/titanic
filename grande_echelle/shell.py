@@ -67,6 +67,31 @@ def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: 
     return facteur
 
 
+def _champ_masque_bandes_rivets(domain, bandes_cfg):
+    """Masque DG0: 1 dans les bandes rivets homogenisees, 0 ailleurs."""
+    V0 = fem.functionspace(domain, ("DG", 0))
+    masque = fem.Function(V0, name="RivetBandsMask")
+    masque.x.array[:] = 0.0
+    if not bandes_cfg:
+        return masque
+
+    intervals = []
+    for bande in bandes_cfg:
+        zc = float(bande["z_centre_m"])
+        largeur = float(bande["largeur_m"])
+        intervals.append((zc - 0.5 * largeur, zc + 0.5 * largeur))
+
+    def valeur_masque(x):
+        z = x[2]
+        out = np.zeros_like(z, dtype=float)
+        for zmin, zmax in intervals:
+            out[(z >= zmin) & (z <= zmax)] = 1.0
+        return out
+
+    masque.interpolate(valeur_masque)
+    return masque
+
+
 def _build_material_fields(domain, cell_tags, cfg):
     """
     Champs matériaux par cellules (coque + bande rivets via tags).
@@ -157,6 +182,7 @@ class ShellModel:
     nu_field: any
     thick_field: any
     gc_factor_field: any
+    rivet_bands_mask_field: any
     damage_state: any
 
 
@@ -235,6 +261,7 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     else:
         bandes_gc = []
     gc_factor_field = _champ_facteur_bandes_rivets(domain, bandes_gc, "facteur_Gc", 1.0)
+    rivet_bands_mask_field = _champ_masque_bandes_rivets(domain, bandes_gc)
     k_res_mech = fem.Constant(
         domain,
         cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
@@ -279,5 +306,6 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         nu_field=nu,
         thick_field=thick,
         gc_factor_field=gc_factor_field,
+        rivet_bands_mask_field=rivet_bands_mask_field,
         damage_state=damage_state,
     )
