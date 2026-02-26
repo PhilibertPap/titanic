@@ -73,7 +73,7 @@ Le script `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` fait le pont 
 - `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` : calibration bandes depuis `rivet/`
 - `rivet/rivet.py` : modele local/intermediaire phase-field + export preset bandes
 - `vis_rivet/vis_rivet.py` : script local plus visuel/experimental (validation qualitative)
-- `run_rivets_ab.py` : comparaison avec/sans effet rivets (grande echelle)
+- `run_rivets_ab.py` : wrapper CLI optionnel pour comparaison A/B (peut etre supprime si vous utilisez `grande_echelle/main.py` directement)
 
 ## Workflow recommande (multi-echelles)
 
@@ -102,7 +102,21 @@ Le script produit typiquement :
 - un preset bandes (`.json`) pour `grande_echelle`,
 - un rapport de calibration (`.calibration.json`).
 
-### C. Lancer le calcul grande echelle avec le preset calibre
+### C. Lancer le calcul grande echelle (preset calibre charge automatiquement)
+
+Si le fichier standard existe :
+
+- `rivet/bandes_rivets_grande_echelle_calibre.json`
+
+alors `grande_echelle/main.py` le charge automatiquement.
+
+Commande la plus simple :
+
+```bash
+python grande_echelle/main.py
+```
+
+Le preset peut toujours etre force explicitement depuis Python si besoin.
 
 ```python
 from grande_echelle.main import creer_config, lancer_calcul
@@ -138,6 +152,12 @@ lancer_comparaison_rivets_rapide()
 - `sigma` (largeur spatiale du patch gaussien)
 - `iceberg_contact_t_start`, `iceberg_contact_t_end`
 
+Remarque importante :
+
+- la position verticale de l'appui iceberg est pilotee par `iceberg_depth_below_waterline`
+- plus cette valeur est grande, plus l'appui descend sur la coque
+- la configuration par defaut a ete ajustee pour charger plus bas (eviter la zone trop bombee)
+
 ### Phase-field global
 
 - `enable_global_phase_field`
@@ -162,6 +182,25 @@ lancer_comparaison_rivets_rapide()
 - `quasi_static/*.pvd` : champs (deplacement, rotation, dommage)
 - `local_frame/*.pvd` : diagnostics base locale / champs materiaux
 
+### Visualisation ParaView (pratique)
+
+Pour voir deformation + endommagement en meme temps :
+
+1. ouvrir `results/<case_name>/quasi_static/displacement.pvd`
+2. ouvrir `results/<case_name>/quasi_static/damage.pvd`
+3. afficher `damage` sur la coque
+4. appliquer `Warp By Vector` avec le champ de deplacement (optionnel)
+
+Pour verifier les bandes rivets :
+
+- ouvrir `results/<case_name>/local_frame/material_fields.pvd`
+- regarder `GcFactorBandes`, `RivetBandsMask`, `RivetBandsMaskViz`
+
+Note :
+
+- si `RivetBandsMaskViz` parait "bancal" (taches/discontinuites), c'est souvent un probleme de resolution de maillage
+- le maillage a ete raffine localement dans les bandes rivets dans `grande_echelle/mesh.py`, mais il faut regenerer le maillage pour en beneficier
+
 ### Modele local `rivet/`
 
 - `run_summary.json` : resume local (rupture, traction de rupture, dommage final, etc.)
@@ -170,6 +209,7 @@ lancer_comparaison_rivets_rapide()
 ## Hypotheses / limites (important)
 
 - Le chargement iceberg est **impose** (pas de contact mecanique explicite iceberg-coque).
+- Le chargement iceberg est impose en **Dirichlet sur la normale locale `e3`** (patch gaussien mobile), choix robuste numeriquement.
 - Le modele `grande_echelle` utilise des **bandes homogenisees** pour les rivets (pas de rivets discrets).
 - Le modele `rivet/` actuel est un **proxy local** (plaque percee AT1), pas encore un assemblage rivete complet.
 - Les resultats sont donc surtout utiles pour des **comparaisons relatives** et du **screening physique/numerique**.

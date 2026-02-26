@@ -73,10 +73,12 @@ N_RIVET_STRIPS_X = 8
 RIVET_STRIP_PHYSICAL_WIDTH_X = 0.30
 RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
-RIVET_STRIP_SIZE_MIN = 0.12
-RIVET_STRIP_SIZE_MAX = 3.00
-RIVET_STRIP_MARGIN_X = 0.35
-RIVET_STRIP_MARGIN_Y = 0.8
+# Stronger refinement than the baseline is needed for 0.30 m strips to appear
+# as continuous bands on the shell surface (and not isolated CG1 spots).
+RIVET_STRIP_SIZE_MIN = 0.05
+RIVET_STRIP_SIZE_MAX = 1.20
+RIVET_STRIP_MARGIN_X = 0.60
+RIVET_STRIP_MARGIN_Y = 1.20
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:

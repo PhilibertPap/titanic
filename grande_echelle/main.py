@@ -88,7 +88,7 @@ def config_par_defaut() -> dict:
         "iceberg_zone_x_debut_m": iceberg_zone_x_debut_m,
         "iceberg_zone_x_fin_m": iceberg_zone_x_fin_m,
         "waterline_z": 0.0,
-        "iceberg_depth_below_waterline": 3.0,
+        "iceberg_depth_below_waterline": 5.5,
         "iceberg_moves_from_xmax_to_xmin": True,
         "iceberg_max_dx_par_pas_m": None,
         "iceberg_contact_t_start": 0.10,
@@ -245,7 +245,14 @@ def config_etude_rivets_screening(with_rivets: bool = True):
 def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
     preset_file = getattr(cfg, "rivet_bandes_preset_file", None)
     if not preset_file:
-        return
+        auto_rel = Path("rivet/bandes_rivets_grande_echelle_calibre.json")
+        auto_candidates = [Path.cwd() / auto_rel, Path(__file__).resolve().parent.parent / auto_rel]
+        auto_found = next((p for p in auto_candidates if p.exists()), None)
+        if auto_found is None:
+            return
+        preset_file = str(auto_found)
+        if MPI.COMM_WORLD.rank == 0:
+            print(f"Auto-using calibrated rivet bands preset: {auto_found}")
 
     candidat = Path(preset_file)
     if candidat.is_absolute():
