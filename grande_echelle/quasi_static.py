@@ -23,7 +23,7 @@ def _write_monitor_csv(path, rows):
 
 
 def _try_build_damage_vi_solver(Vd, damage, F_d, J_d, cfg):
-    if not bool(getattr(cfg, "phase_field_use_snes_vi", True)):
+    if not bool(getattr(cfg, "phase_field_use_snes_vi", False)):
         return None
     # Preflight PETSc SNESVI support before constructing a DOLFINx NonlinearProblem.
     # On some versions, constructing NonlinearProblem may fail partway and emit a
@@ -91,7 +91,11 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     zmax = comm.allreduce(domain.geometry.x[:, 2].max(), op=MPI.MAX)
 
     y_mid = float(np.clip(cfg.iceberg_center_y, ymin, ymax))
-    z_target = cfg.waterline_z - cfg.iceberg_depth_below_waterline
+    h_above_bottom = getattr(cfg, "iceberg_height_above_bottom_m", None)
+    if h_above_bottom is not None:
+        z_target = zmin + float(h_above_bottom)
+    else:
+        z_target = cfg.waterline_z - cfg.iceberg_depth_below_waterline
     z_mid = float(np.clip(z_target, zmin, zmax))
 
     x_zone_debut = float(np.clip(getattr(cfg, "iceberg_zone_x_debut_m", xmin), xmin, xmax))

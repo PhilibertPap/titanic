@@ -12,9 +12,10 @@ SHELL_CELL_TAG = 1
 L = 269.0   # ship length [m] -> x
 B_HALF = 14.1  # half-beam [m] -> y
 DRAFT = 10.5   # draft below waterline [m]
-FREEBOARD_TO_DECK = 7.8  # approx keel->deck total height ~18.3 m
+# Height of the modeled shell top above the waterline (not the Boat Deck).
+FREEBOARD_TO_SHELL_TOP = 7.8  # approx keel->shell-top total height ~18.3 m
 Z_BOTTOM = -DRAFT
-Z_TOP = FREEBOARD_TO_DECK
+Z_TOP = FREEBOARD_TO_SHELL_TOP
 
 # Half-hull surface: y is the half-breadth (outboard side).
 # Shape cues (from Titanic hull lines) approximated here:
@@ -23,7 +24,7 @@ Z_TOP = FREEBOARD_TO_DECK
 # - tapered bow/stern
 # - slight tumblehome toward upper deck (very mild)
 Y_KEEL = 0.0
-Y_BILGE_BASE = 12.2
+Y_BILGE_BASE = 12.9
 Y_WATERLINE_BASE = 13.9
 Y_DECK_BASE = 13.5
 Y_MIDSHIP_FULLNESS = 0.06
@@ -33,8 +34,14 @@ Y_LONGITUDINAL_WARP = 0.08
 # - near-waterline sheer-like variation stronger than near keel
 # - weak global sag/hog over the modeled segment
 Z_SHEER_AMPLITUDE = 0.45
-Z_KEEL_SAG_AMPLITUDE = 0.10
+Z_KEEL_SAG_AMPLITUDE = 0.04
 Z_END_RISE_AMPLITUDE = 0.18
+# Midship vertical redistribution (shape tuning):
+# raise the very bottom and very top a little near midship, while leaving the
+# middle heights almost unchanged. This helps avoid a flat-looking keel line in
+# the center without disturbing the rest of the hull too much.
+Z_MIDSHIP_BOTTOM_LIFT = 0.32
+Z_MIDSHIP_TOP_LIFT = 0.16
 
 # Longitudinal planform narrowing (half-breadth effect): long parallel mid-body and smoother ends
 MIDBODY_U0 = 0.14
@@ -47,7 +54,7 @@ N_SECTION_PTS = 17
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
-ICEBERG_CENTER_Z = -6.3     # m, below waterline (z=0)
+ICEBERG_CENTER_Z = -7.5     # m, representative impact height (~3 m above hull bottom)
 # Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
 ICEBERG_X_START = 177.0
 ICEBERG_X_END = 268.0
@@ -67,9 +74,9 @@ RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
 # Stronger refinement than the baseline is needed for 0.30 m strips to appear
 # as continuous bands on the shell surface (and not isolated CG1 spots).
-RIVET_STRIP_SIZE_MIN = 0.05
-RIVET_STRIP_SIZE_MAX = 1.20
-RIVET_STRIP_MARGIN_X = 0.60
+RIVET_STRIP_SIZE_MIN = 0.09
+RIVET_STRIP_SIZE_MAX = 1.40
+RIVET_STRIP_MARGIN_X = 0.45
 RIVET_STRIP_MARGIN_Y = 1.20
 
 
@@ -105,21 +112,41 @@ def hull_xyz(u: float, v: float) -> tuple[float, float, float]:
     z += Z_SHEER_AMPLITUDE * (max(s - s_water, 0.0) / max(1.0 - s_water, 1e-9)) ** 1.8 * (xu * xu)
     # Extra end rise/sheer near bow/stern, stronger toward the upper hull
     z += Z_END_RISE_AMPLITUDE * (s ** 2.2) * (endness ** 1.6)
+    # Gentle midship-only vertical redistribution: lift the very bottom and
+    # very top slightly, keep the mid-height mostly unchanged.
+    midship_weight = (1.0 - xu * xu)
+    z += Z_MIDSHIP_BOTTOM_LIFT * midship_weight * (1.0 - _smoothstep(0.10, 0.30, s))
+    z += Z_MIDSHIP_TOP_LIFT * midship_weight * _smoothstep(0.74, 0.92, s)
 
     # Section profile y(z): bilge + flare, with mild longitudinal fullness.
-    # Fuller near midship, slimmer near the ends.
-    fullness = 1.0 + Y_MIDSHIP_FULLNESS * (1.0 - xu * xu)
+    # Fuller near midship, slimmer near the ends, but reduce this effect near
+    # the bottom so the midship bottom does not bulge upward visually.
+    midship_fullness_weight = (1.0 - xu * xu)
+    bottom_fullness_ramp = _smoothstep(0.10, 0.28, s)
+    fullness = 1.0 + Y_MIDSHIP_FULLNESS * midship_fullness_weight * bottom_fullness_ramp
     y_bilge = Y_BILGE_BASE * fullness * fullness_x
+    # Targeted relief: reduce lower-midship bilge breadth slightly so the
+    # bottom/side junction does not look overly bulged upward in the middle.
+    midship_bilge_relief = (1.0 - xu * xu) * (1.0 - _smoothstep(0.18, 0.42, s))
+    y_bilge *= (1.0 - 0.10 * midship_bilge_relief)
     y_waterline = Y_WATERLINE_BASE * fullness * fullness_x
     y_deck = Y_DECK_BASE * fullness * fullness_x
 
-    # Piecewise smooth half-breadth profile from keel to deck
-    # Lower bilge transition + sharper turn gives a more vertical flank over a
-    # larger height before the hull rounds out.
-    s_bilge = 0.08
+    # Piecewise smooth half-breadth profile from keel to deck.
+    # Keep this transition constant along x for robust loft meshing in Gmsh.
+    s_bilge = 0.075
     if s <= s_bilge:
         t = s / s_bilge
         y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.45)
+        # Further reduce the "belly" near the keel line at midship (visible as
+        # the inner edge of this starboard half-hull patch), but avoid acting
+        # exactly at the very bottom point to prevent an artificial flat shelf.
+        keel_midship_relief = (
+            (1.0 - xu * xu)
+            * _smoothstep(0.08, 0.28, t)
+            * (1.0 - _smoothstep(0.55, 0.95, t))
+        )
+        y_section *= (1.0 - 0.14 * keel_midship_relief)
     elif s <= s_water:
         t = (s - s_bilge) / max(s_water - s_bilge, 1e-9)
         # Slightly convex flank-to-waterline transition (avoid visible concavity)

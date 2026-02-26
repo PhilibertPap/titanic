@@ -88,7 +88,10 @@ def config_par_defaut() -> dict:
         "iceberg_zone_x_debut_m": iceberg_zone_x_debut_m,
         "iceberg_zone_x_fin_m": iceberg_zone_x_fin_m,
         "waterline_z": 0.0,
-        "iceberg_depth_below_waterline": 6.3,
+        # Preferred way to place the iceberg vertically after geometry changes:
+        # distance from hull bottom (keel region) in the model coordinates.
+        "iceberg_height_above_bottom_m": 3.0,
+        "iceberg_depth_below_waterline": 7.5,
         "iceberg_moves_from_xmax_to_xmin": True,
         "iceberg_max_dx_par_pas_m": None,
         "iceberg_contact_t_start": 0.0,
@@ -103,6 +106,7 @@ def config_par_defaut() -> dict:
         "phase_field_split_traction_compression": True,
         "phase_field_seuil_nucleation_j_m3": 8.0e4,
         "phase_field_mise_a_jour_tous_les_n_pas": 1,
+        "phase_field_use_snes_vi": False,
         # Homogeneisation des rivets en bandes selon z
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": bandes_rivets,
@@ -143,6 +147,8 @@ def verifier_config(cfg) -> None:
         cfg.iceberg_contact_t_start = 0.0
     if not hasattr(cfg, "iceberg_contact_t_end"):
         cfg.iceberg_contact_t_end = cfg.t_final
+    if not hasattr(cfg, "iceberg_height_above_bottom_m"):
+        cfg.iceberg_height_above_bottom_m = None
     if not hasattr(cfg, "write_local_frame_outputs"):
         cfg.write_local_frame_outputs = True
     if not hasattr(cfg, "write_rotation_vtk"):
@@ -151,6 +157,8 @@ def verifier_config(cfg) -> None:
         cfg.write_damage_vtk = True
     if not hasattr(cfg, "write_damage_vtk_if_disabled"):
         cfg.write_damage_vtk_if_disabled = False
+    if not hasattr(cfg, "phase_field_use_snes_vi"):
+        cfg.phase_field_use_snes_vi = False
 
     if cfg.num_steps <= 0:
         raise ValueError("num_steps must be > 0")
@@ -160,9 +168,13 @@ def verifier_config(cfg) -> None:
         raise ValueError("ecrire_vtk_tous_les_n_pas must be >= 1")
     if cfg.afficher_console_tous_les_n_pas <= 0:
         raise ValueError("afficher_console_tous_les_n_pas must be >= 1")
-    for name in ("iceberg_center_y", "waterline_z", "iceberg_depth_below_waterline"):
+    for name in ("iceberg_center_y", "waterline_z"):
         if not hasattr(cfg, name):
             raise ValueError(f"Missing required config field: {name}")
+    has_height = hasattr(cfg, "iceberg_height_above_bottom_m") and cfg.iceberg_height_above_bottom_m is not None
+    has_depth = hasattr(cfg, "iceberg_depth_below_waterline")
+    if not (has_height or has_depth):
+        raise ValueError("Missing required vertical iceberg position: set iceberg_height_above_bottom_m or iceberg_depth_below_waterline")
 
 
 DEFAULT_CONFIG = creer_config()
