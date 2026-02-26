@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import csv
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +63,10 @@ def config_par_defaut() -> dict:
         "num_steps": 20,
         "ecrire_vtk_tous_les_n_pas": 1,
         "afficher_console_tous_les_n_pas": 1,
+        "write_local_frame_outputs": True,
+        "write_rotation_vtk": True,
+        "write_damage_vtk": True,
+        "write_damage_vtk_if_disabled": False,
         # CL sur les bords tags Gmsh
         "left_facet_tag": 1,
         "right_facet_tag": 2,
@@ -91,6 +96,7 @@ def config_par_defaut() -> dict:
         # Homogeneisation des rivets en bandes selon z
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": bandes_rivets,
+        "rivet_bandes_preset_file": None,
         # Solveurs PETSc
         "mechanics_petsc_options": None,
         "damage_petsc_options": None,
@@ -131,6 +137,16 @@ def verifier_config(cfg) -> None:
         cfg.utiliser_bandes_rivets_z = False
     if not hasattr(cfg, "bandes_rivets_z"):
         cfg.bandes_rivets_z = []
+    if not hasattr(cfg, "rivet_bandes_preset_file"):
+        cfg.rivet_bandes_preset_file = None
+    if not hasattr(cfg, "write_local_frame_outputs"):
+        cfg.write_local_frame_outputs = True
+    if not hasattr(cfg, "write_rotation_vtk"):
+        cfg.write_rotation_vtk = True
+    if not hasattr(cfg, "write_damage_vtk"):
+        cfg.write_damage_vtk = True
+    if not hasattr(cfg, "write_damage_vtk_if_disabled"):
+        cfg.write_damage_vtk_if_disabled = False
 
     if cfg.num_steps <= 0:
         raise ValueError("num_steps must be > 0")
@@ -208,9 +224,124 @@ def config_etude_rivets_production(with_rivets: bool = True):
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
 
+def config_etude_rivets_screening(with_rivets: bool = True):
+    """Preset rapide pour balayages: meme physique, moins de sorties et PF moins frequent."""
+    base = creer_config(
+        case_name="titanic_rivets_screening",
+        num_steps=16,
+        ecrire_vtk_tous_les_n_pas=4,
+        afficher_console_tous_les_n_pas=4,
+        write_local_frame_outputs=False,
+        write_rotation_vtk=False,
+        write_damage_vtk=False,
+        phase_field_mise_a_jour_tous_les_n_pas=2,
+        pressure_peak=2.0e5,
+        iceberg_disp_peak=1.5e-2,
+    )
+    return config_etude_rivets(with_rivets=with_rivets, base=base)
+
+
+def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
+    preset_file = getattr(cfg, "rivet_bandes_preset_file", None)
+    if not preset_file:
+        return
+
+    candidat = Path(preset_file)
+    if candidat.is_absolute():
+        preset_candidates = [candidat]
+    else:
+        preset_candidates = [
+            Path.cwd() / candidat,
+            Path(__file__).resolve().parent / candidat,
+        ]
+    preset_path = next((p for p in preset_candidates if p.exists()), None)
+    if preset_path is None:
+        print(f"Rivet preset not found. Tried: {preset_candidates}")
+        return
+
+    data = json.loads(preset_path.read_text(encoding="utf-8"))
+    bandes = data.get("bandes_rivets_z")
+    if not isinstance(bandes, list):
+        raise ValueError(
+            f"Invalid rivet preset format in {preset_path}: expected key 'bandes_rivets_z' (list)"
+        )
+
+    cfg.bandes_rivets_z = bandes
+    cfg.utiliser_bandes_rivets_z = True
+    cfg.rivet_bandes_preset_file = str(preset_path)
+    print(f"Using rivet bands preset: {preset_path}")
+
+
+def lancer_comparaison_rivets_rapide():
+    print("=== Cas 1 : avec effet des rivets ===")
+    cfg_avec = config_etude_rivets_rapide(with_rivets=True)
+    lancer_calcul(cfg_avec)
+
+    print("=== Cas 2 : sans effet des rivets ===")
+    cfg_sans = config_etude_rivets_rapide(with_rivets=False)
+    lancer_calcul(cfg_sans)
+
+    print("Comparaison terminee.")
+    print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
+
+
+def lancer_comparaison_rivets_production():
+    print("=== Cas 1 : avec effet des rivets ===")
+    cfg_avec = config_etude_rivets_production(with_rivets=True)
+    lancer_calcul(cfg_avec)
+
+    print("=== Cas 2 : sans effet des rivets ===")
+    cfg_sans = config_etude_rivets_production(with_rivets=False)
+    lancer_calcul(cfg_sans)
+
+    print("Comparaison terminee.")
+    print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
+
+
+def lancer_comparaison_rivets_screening():
+    print("=== Cas 1 : avec effet des rivets (screening) ===")
+    cfg_avec = config_etude_rivets_screening(with_rivets=True)
+    lancer_calcul(cfg_avec)
+
+    print("=== Cas 2 : sans effet des rivets (screening) ===")
+    cfg_sans = config_etude_rivets_screening(with_rivets=False)
+    lancer_calcul(cfg_sans)
+
+    print("Comparaison screening terminee.")
+    print("Regarder d'abord monitor.csv, puis relancer en mode rapide/production si besoin.")
+
+
+def analyser_monitor_csv(monitor_csv_file) -> dict:
+    path = Path(monitor_csv_file)
+    rows = []
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if not rows:
+        return {"monitor_csv_file": str(path), "n_steps": 0}
+
+    total_step_s = sum(float(r.get("temps_pas_s", 0.0)) for r in rows)
+    total_mech_s = sum(float(r.get("temps_meca_s", r.get("temps_u_s", 0.0))) for r in rows)
+    total_pf_s = sum(float(r.get("temps_phase_field_s", 0.0)) for r in rows)
+    out = {
+        "monitor_csv_file": str(path),
+        "n_steps": len(rows),
+        "total_step_s": total_step_s,
+        "total_mech_s": total_mech_s,
+        "total_phase_field_s": total_pf_s,
+        "fraction_mech": (total_mech_s / total_step_s) if total_step_s > 0 else None,
+        "fraction_phase_field": (total_pf_s / total_step_s) if total_step_s > 0 else None,
+        "fraction_other": ((total_step_s - total_mech_s - total_pf_s) / total_step_s) if total_step_s > 0 else None,
+        "last_max_damage": float(rows[-1]["max_damage"]),
+        "last_mean_damage": float(rows[-1]["mean_damage"]),
+    }
+    return out
+
+
 def lancer_calcul(cfg=None):
     cfg = DEFAULT_CONFIG if cfg is None else cfg
     verifier_config(cfg)
+    _charger_bandes_rivets_preset_si_disponible(cfg)
 
     # ------------------------------------------------------------
     # 1) Lecture du maillage
@@ -285,18 +416,19 @@ def lancer_calcul(cfg=None):
     # ------------------------------------------------------------
     model = build_shell_model(domain, cell_tags, facets, cfg)
 
-    with io.VTKFile(MPI.COMM_WORLD, output_layout["local_frame_file"], "w") as vtk:
-        vtk.write_function(model.e1, 0.0)
-        vtk.write_function(model.e2, 0.0)
-        vtk.write_function(model.e3, 0.0)
+    if bool(getattr(cfg, "write_local_frame_outputs", True)):
+        with io.VTKFile(MPI.COMM_WORLD, output_layout["local_frame_file"], "w") as vtk:
+            vtk.write_function(model.e1, 0.0)
+            vtk.write_function(model.e2, 0.0)
+            vtk.write_function(model.e3, 0.0)
 
-    V0 = fem.functionspace(domain, ("DG", 0))
-    material_regions = fem.Function(V0, name="MaterialRegion")
-    material_regions.x.array[:] = float(cfg.shell_cell_tag)
-    if cell_tags is not None and len(cell_tags.indices) > 0:
-        material_regions.x.array[cell_tags.indices] = cell_tags.values.astype(float)
-    with io.VTKFile(MPI.COMM_WORLD, local_frame_dir / "material_regions.pvd", "w") as vtk:
-        vtk.write_function(material_regions, 0.0)
+        V0 = fem.functionspace(domain, ("DG", 0))
+        material_regions = fem.Function(V0, name="MaterialRegion")
+        material_regions.x.array[:] = float(cfg.shell_cell_tag)
+        if cell_tags is not None and len(cell_tags.indices) > 0:
+            material_regions.x.array[cell_tags.indices] = cell_tags.values.astype(float)
+        with io.VTKFile(MPI.COMM_WORLD, local_frame_dir / "material_regions.pvd", "w") as vtk:
+            vtk.write_function(material_regions, 0.0)
 
     # ------------------------------------------------------------
     # 5) Metadonnees + calcul quasi-statique

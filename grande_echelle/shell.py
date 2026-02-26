@@ -91,6 +91,51 @@ def _build_material_fields(domain, cell_tags, cfg):
         thick.x.array[:] *= facteur_t.x.array
 
     return E, nu, thick
+
+
+def _build_local_basis_fields(domain, gdim):
+    """Base locale (e1, e2, e3) interpolee sur un espace DG0 vectoriel."""
+    VT = fem.functionspace(domain, ("DG", 0, (gdim,)))
+    V0, _ = VT.sub(0).collapse()
+    frame_expr = _local_frame(domain)
+    basis_vectors = [fem.Function(VT, name=f"Basis_vector_e{i+1}") for i in range(gdim)]
+    for i in range(gdim):
+        e_exp = fem.Expression(frame_expr[i], V0.element.interpolation_points)
+        basis_vectors[i].interpolate(e_exp)
+    return basis_vectors
+
+
+def _build_shell_spaces(domain, gdim):
+    """Espaces EF du modele de coque (deplacement + rotation + dommage)."""
+    Ue = basix.ufl.element("P", domain.basix_cell(), 2, shape=(gdim,))
+    Te = basix.ufl.element("CR", domain.basix_cell(), 1, shape=(gdim,))
+    V = fem.functionspace(domain, basix.ufl.mixed_element([Ue, Te]))
+    Vu, _ = V.sub(0).collapse()
+    Vtheta, _ = V.sub(1).collapse()
+    Vd = fem.functionspace(domain, ("CG", 1))
+    return V, Vu, Vtheta, Vd
+
+
+def _build_boundary_conditions(V, Vu, Vtheta, facets, cfg):
+    """Conditions aux limites encastrees sur les bords tagges."""
+    edge_tags = [cfg.left_facet_tag, cfg.right_facet_tag]
+    if cfg.clamp_all_edges:
+        edge_tags.extend([cfg.bottom_facet_tag, cfg.top_facet_tag])
+    edge_tags = list(dict.fromkeys(edge_tags))
+
+    uD = fem.Function(Vu)
+    thetaD = fem.Function(Vtheta)
+    bcs = []
+    for facet_tag in edge_tags:
+        tagged_facets = facets.find(facet_tag)
+        disp_dofs = fem.locate_dofs_topological((V.sub(0), Vu), 1, tagged_facets)
+        bcs.append(fem.dirichletbc(uD, disp_dofs, V.sub(0)))
+        if cfg.clamp_rotations:
+            rot_dofs = fem.locate_dofs_topological((V.sub(1), Vtheta), 1, tagged_facets)
+            bcs.append(fem.dirichletbc(thetaD, rot_dofs, V.sub(1)))
+    return bcs
+
+
 @dataclass
 class ShellModel:
     domain: any
@@ -132,18 +177,9 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     mu = E / 2 / (1 + nu)
     lmbda_ps = 2 * lmbda * mu / (lmbda + 2 * mu)
 
-    VT = fem.functionspace(domain, ("DG", 0, (gdim,)))
-    V0, _ = VT.sub(0).collapse()
-    frame = _local_frame(domain)
-    basis_vectors = [fem.Function(VT, name=f"Basis_vector_e{i+1}") for i in range(gdim)]
-    e1, e2, e3 = basis_vectors
-    for i in range(gdim):
-        e_exp = fem.Expression(frame[i], V0.element.interpolation_points)
-        basis_vectors[i].interpolate(e_exp)
-
-    Ue = basix.ufl.element("P", domain.basix_cell(), 2, shape=(gdim,))
-    Te = basix.ufl.element("CR", domain.basix_cell(), 1, shape=(gdim,))
-    V = fem.functionspace(domain, basix.ufl.mixed_element([Ue, Te]))
+    # Base locale + espaces EF (organisation proche d'un TD)
+    e1, e2, e3 = _build_local_basis_fields(domain, gdim)
+    V, Vu, Vtheta, Vd = _build_shell_spaces(domain, gdim)
 
     v = fem.Function(V)
     u, theta = ufl.split(v)
@@ -192,9 +228,6 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     drilling_stiffness = E * thick**3 / h_mesh**2
     drilling_stress = drilling_stiffness * drilling_strain
 
-    Vu, _ = V.sub(0).collapse()
-    Vtheta, _ = V.sub(1).collapse()
-    Vd = fem.functionspace(domain, ("CG", 1))
     damage_state = fem.Function(Vd, name="DamageState")
     damage_state.x.array[:] = 0.0
     if getattr(cfg, "utiliser_bandes_rivets_z", False):
@@ -208,23 +241,10 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     )
     degradation = (1.0 - damage_state) ** 2 + k_res_mech
 
-    edge_tags = [cfg.left_facet_tag, cfg.right_facet_tag]
-    if cfg.clamp_all_edges:
-        edge_tags.extend([cfg.bottom_facet_tag, cfg.top_facet_tag])
-    edge_tags = list(dict.fromkeys(edge_tags))
-
     # ------------------------------------------------------------
     # 3) Conditions aux limites
     # ------------------------------------------------------------
-    uD = fem.Function(Vu)
-    thetaD = fem.Function(Vtheta)
-    bcs = []
-    for facet_tag in edge_tags:
-        disp_dofs = fem.locate_dofs_topological((V.sub(0), Vu), 1, facets.find(facet_tag))
-        bcs.append(fem.dirichletbc(uD, disp_dofs, V.sub(0)))
-        if cfg.clamp_rotations:
-            rot_dofs = fem.locate_dofs_topological((V.sub(1), Vtheta), 1, facets.find(facet_tag))
-            bcs.append(fem.dirichletbc(thetaD, rot_dofs, V.sub(1)))
+    bcs = _build_boundary_conditions(V, Vu, Vtheta, facets, cfg)
 
     # Couplage staggered avec le phase-field global :
     # la rigidite mecanique est degradee par le dommage courant.

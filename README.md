@@ -62,6 +62,34 @@ Ou plus simplement :
 python run_rivets_ab.py
 ```
 
+Alternative sans script (meme logique) :
+
+```python
+from grande_echelle.main import lancer_comparaison_rivets_rapide
+
+lancer_comparaison_rivets_rapide()
+```
+
+## Preset rivets (optionnel)
+
+Le sous-modele `rivet/` peut ecrire un preset JSON simple pour alimenter
+les bandes homogenisees du modele `grande_echelle`.
+
+```python
+from rivet import creer_preset_bandes_grande_echelle
+
+creer_preset_bandes_grande_echelle()
+```
+
+Puis dans `grande_echelle` :
+
+```python
+from grande_echelle.main import creer_config, lancer_calcul
+
+cfg = creer_config(rivet_bandes_preset_file="rivet/bandes_rivets_grande_echelle.json")
+lancer_calcul(cfg)
+```
+
 ## Sorties importantes
 
 - `run_metadata.json` : parametres du run

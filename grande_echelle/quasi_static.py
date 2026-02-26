@@ -1,5 +1,6 @@
 import numpy as np
 from time import perf_counter
+from contextlib import nullcontext
 from mpi4py import MPI
 import ufl
 from dolfinx import fem, io
@@ -108,8 +109,9 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             "Expected 'neumann_pressure' or 'dirichlet_displacement'."
         )
 
+    # Probleme lineaire mecanique (deplacement/rotation de coque)
     mechanics_petsc_options = cfg.mechanics_petsc_options or cfg.petsc_options
-    problem = dolfinx.fem.petsc.LinearProblem(
+    problem_u = dolfinx.fem.petsc.LinearProblem(
         model.a,
         L,
         u=model.v,
@@ -132,7 +134,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     damage_old.x.array[:] = 0.0
     history.x.array[:] = 0.0
 
-    damage_enabled = cfg.enable_global_phase_field
+    damage_enabled = bool(cfg.enable_global_phase_field)
     if damage_enabled:
         gc_value = cfg.phase_field_gc_j_m2
         l0_value = cfg.phase_field_l0_m
@@ -175,7 +177,8 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             + (gc / l0 + 2.0 * history + residual_stiffness) * dd * eta
         ) * ufl.dx
         L_d = (2.0 * history) * eta * ufl.dx
-        damage_problem = dolfinx.fem.petsc.LinearProblem(
+        # Probleme lineaire phase-field global (dommage)
+        problem_d = dolfinx.fem.petsc.LinearProblem(
             a_d,
             L_d,
             u=damage,
@@ -186,7 +189,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     else:
         psi_drive = None
         psi_eval = None
-        damage_problem = None
+        problem_d = None
 
     # ------------------------------------------------------------
     # 4) Discretisation en temps + sorties
@@ -204,6 +207,18 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             getattr(cfg, "vtk_write_stride", 1),
         )
     )
+    write_rotation_vtk = bool(getattr(cfg, "write_rotation_vtk", True))
+    write_damage_vtk = bool(getattr(cfg, "write_damage_vtk", True))
+    if not damage_enabled and not bool(getattr(cfg, "write_damage_vtk_if_disabled", False)):
+        write_damage_vtk = False
+
+    ramp_amplitude_iceberg = bool(getattr(cfg, "ramp_amplitude_iceberg", False))
+    maj_damage_stride = max(
+        1,
+        int(getattr(cfg, "phase_field_mise_a_jour_tous_les_n_pas", 1)),
+    )
+    phase_field_seuil = float(getattr(cfg, "phase_field_seuil_nucleation_j_m3", 0.0))
+
     afficher_console_tous_les_n_pas = int(
         getattr(
             cfg,
@@ -213,9 +228,19 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     )
     monitor_rows = []
 
+    rot_ctx = (
+        io.VTKFile(MPI.COMM_WORLD, output_layout["rotation_file"], "w")
+        if write_rotation_vtk
+        else nullcontext(None)
+    )
+    dmg_ctx = (
+        io.VTKFile(MPI.COMM_WORLD, output_layout["damage_file"], "w")
+        if write_damage_vtk
+        else nullcontext(None)
+    )
     with io.VTKFile(MPI.COMM_WORLD, output_layout["displacement_file"], "w") as disp_vtk:
-        with io.VTKFile(MPI.COMM_WORLD, output_layout["rotation_file"], "w") as rot_vtk:
-            with io.VTKFile(MPI.COMM_WORLD, output_layout["damage_file"], "w") as damage_vtk:
+        with rot_ctx as rot_vtk:
+            with dmg_ctx as damage_vtk:
                 # ------------------------------------------------------------
                 # 5) Boucle en temps quasi-statique
                 # ------------------------------------------------------------
@@ -225,7 +250,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     damage_wall_s = 0.0
                     t.value = tn
                     facteur_rampe = 1.0
-                    if getattr(cfg, "ramp_amplitude_iceberg", False):
+                    if ramp_amplitude_iceberg:
                         facteur_rampe = 0.0 if cfg.t_final <= 0 else float(tn / cfg.t_final)
                     if cfg.iceberg_loading == "neumann_pressure":
                         p0.value = cfg.pressure_peak * facteur_rampe
@@ -250,7 +275,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     # Mechanical solve uses damage from the previous converged load step
                     # through `model.damage_state` embedded in the shell bilinear form.
                     mech_t0 = perf_counter()
-                    problem.solve()
+                    problem_u.solve()
                     mech_wall_s = perf_counter() - mech_t0
                     u_out.interpolate(model.v.sub(0))
                     theta_out.interpolate(model.v.sub(1))
@@ -258,15 +283,11 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     if damage_enabled:
                         damage_t0 = perf_counter()
                         psi_drive.interpolate(psi_eval)
-                        seuil = float(getattr(cfg, "phase_field_seuil_nucleation_j_m3", 0.0))
-                        psi_effective = np.maximum(psi_drive.x.array - seuil, 0.0)
+                        psi_effective = np.maximum(psi_drive.x.array - phase_field_seuil, 0.0)
                         history.x.array[:] = np.maximum(history.x.array, psi_effective)
 
-                        maj_damage = int(
-                            getattr(cfg, "phase_field_mise_a_jour_tous_les_n_pas", 1)
-                        )
-                        if (n % max(1, maj_damage) == 0) or (n == len(time_steps) - 1):
-                            damage_problem.solve()
+                        if (n % maj_damage_stride == 0) or (n == len(time_steps) - 1):
+                            problem_d.solve()
                             d_clipped = np.clip(damage.x.array, 0.0, 1.0)
                             d_irrev = np.maximum(damage_old.x.array, d_clipped)
                             damage.x.array[:] = d_irrev
@@ -279,8 +300,10 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
 
                     if (n % ecrire_vtk_tous_les_n_pas == 0) or (n == len(time_steps) - 1):
                         disp_vtk.write_function(u_out, tn)
-                        rot_vtk.write_function(theta_out, tn)
-                        damage_vtk.write_function(damage, tn)
+                        if rot_vtk is not None:
+                            rot_vtk.write_function(theta_out, tn)
+                        if damage_vtk is not None:
+                            damage_vtk.write_function(damage, tn)
 
                     u_max = np.linalg.norm(u_out.x.array, ord=np.inf)
                     max_d = float(np.max(damage.x.array))
