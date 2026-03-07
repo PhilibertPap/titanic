@@ -116,6 +116,7 @@ def config_par_defaut() -> dict:
         "phase_field_snes_rtol": 1e-9,
         "phase_field_snes_atol": 1e-9,
         "phase_field_snes_max_it": 50,
+        "uniformiser_facteur_gc_bandes": True,
         # Bandes rivets homogenisees
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": _bandes_rivets_par_defaut(rivet_zone_x_debut_m, rivet_zone_x_fin_m),
@@ -234,6 +235,7 @@ OPTIONAL_CONFIG_DEFAULTS = {
     "phase_field_snes_rtol": 1e-9,
     "phase_field_snes_atol": 1e-9,
     "phase_field_snes_max_it": 50,
+    "uniformiser_facteur_gc_bandes": True,
     "temps_relatifs": None,
 }
 
@@ -311,7 +313,7 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
         nombre_pas=20,
         vtk_tous_les_n_pas=1,
         console_tous_les_n_pas=2,
-        deplacement_pic_iceberg=1.5e-2,
+        deplacement_pic_iceberg=2.5e-2,
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
             0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0,
@@ -328,7 +330,7 @@ def config_etude_rivets_production(with_rivets: bool = True):
         nombre_pas=36,
         vtk_tous_les_n_pas=1,
         console_tous_les_n_pas=3,
-        deplacement_pic_iceberg=1.5e-2,
+        deplacement_pic_iceberg=2.5e-2,
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
             0.50, 0.54, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.82, 0.86,
@@ -352,7 +354,7 @@ def config_etude_rivets_screening(with_rivets: bool = True):
         ecrire_vtk_endommagement=False,
         phase_field_mise_a_jour_tous_les_n_pas=2,
         iceberg_dx_max_par_pas_m=3.0,
-        deplacement_pic_iceberg=1.5e-2,
+        deplacement_pic_iceberg=2.5e-2,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
@@ -402,6 +404,12 @@ def _resoudre_fichier_existant(path_like: str | Path, search_roots: list[Path], 
 
 
 def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
+    if not bool(cfg.utiliser_bandes_rivets_z):
+        cfg.bandes_rivets_z = []
+        if MPI.COMM_WORLD.rank == 0:
+            print("Rivet bands disabled by config (no rivet preset loaded).")
+        return
+
     preset_file = cfg.fichier_preset_bandes_rivets
     if not preset_file:
         auto_rel = Path("rivet/bandes_rivets_grande_echelle_calibre.json")
@@ -443,6 +451,22 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
         if MPI.COMM_WORLD.rank == 0 and len(bandes_filtrees) != len(bandes):
             print(f"Filtered rivet bands by x-range: kept {len(bandes_filtrees)}/{len(bandes)}")
         bandes = bandes_filtrees
+
+    if bool(cfg.uniformiser_facteur_gc_bandes):
+        calib_path = preset_path.with_name(f"{preset_path.stem}.calibration.json")
+        facteur_gc = None
+        if calib_path.exists():
+            try:
+                calib_data = json.loads(calib_path.read_text(encoding="utf-8"))
+                facteur_gc = calib_data.get("calibrated_factors", {}).get("facteur_Gc")
+            except Exception:
+                facteur_gc = None
+        if isinstance(facteur_gc, (int, float)):
+            facteur_gc = float(facteur_gc)
+            for bande in bandes:
+                bande["facteur_Gc"] = facteur_gc
+            if MPI.COMM_WORLD.rank == 0:
+                print(f"Uniformized facteur_Gc from petite echelle calibration: {facteur_gc:.6g}")
 
     cfg.bandes_rivets_z = bandes
     cfg.utiliser_bandes_rivets_z = True
