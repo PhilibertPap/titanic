@@ -35519,3 +35519,5 @@ $Elements
 17619 8775 8781 8776 
 17620 8802 8806 8804 
 $EndElements
+//+
+Physical Surface("HullPlate", 1) += {1};
