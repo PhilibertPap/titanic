@@ -194,7 +194,44 @@ def _construire_pas_temps(cfg, x0: float, x1: float, t_contact_duration: float):
     if cfg.temps_relatifs:
         return cfg.temps_final * np.array(cfg.temps_relatifs, dtype=float)
 
-    return np.linspace(0.0, cfg.temps_final, cfg.nombre_pas + 1)
+    t_final = float(cfg.temps_final)
+    t0 = float(cfg.iceberg_contact_t_debut)
+    t1 = float(cfg.iceberg_contact_t_fin)
+    t0 = max(0.0, min(t0, t_final))
+    t1 = max(t0, min(t1, t_final))
+
+    n_total = max(int(cfg.nombre_pas), 8)
+    n_pre = 0 if t0 <= 0.0 else max(3, int(np.round(0.03 * n_total)))
+    n_post = 0 if t1 >= t_final else max(3, int(np.round(0.02 * n_total)))
+    n_contact = max(4, n_total - n_pre - n_post)
+    if n_contact + n_pre + n_post < n_total:
+        n_contact = n_total - n_pre - n_post
+
+    segments = []
+    if t0 > 0.0:
+        segments.append(np.linspace(0.0, t0, n_pre + 1))
+    else:
+        segments.append(np.array([0.0]))
+
+    if t1 > t0:
+        segments.append(np.linspace(t0, t1, n_contact + 1))
+    else:
+        segments.append(np.array([t0, t1]))
+
+    if t1 < t_final:
+        segments.append(np.linspace(t1, t_final, n_post + 1))
+
+    times = [segments[0][0]]
+    for segment in segments:
+        segment = np.asarray(segment, dtype=float)
+        if segment.size <= 1:
+            continue
+        for t in segment[1:]:
+            t_prev = times[-1]
+            if t > t_prev:
+                times.append(float(t))
+
+    return np.array(times, dtype=float)
 
 
 # ============================================================================

@@ -48,9 +48,11 @@ MIDBODY_U0 = 0.14
 MIDBODY_U1 = 0.86
 END_TAPER_MIN = 0.06
 
-# Loft sections (couples) along x
-N_SECTIONS_X = 11
-N_SECTION_PTS = 17
+# Mesh choice aimed at speed-first studies:
+# - keep a coarse global mesh
+# - keep a local refinement near the iceberg path and rivet bands
+N_SECTIONS_X = 9
+N_SECTION_PTS = 11
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
@@ -63,10 +65,10 @@ ICEBERG_REFINEMENT_X_START = 180.0
 ICEBERG_REFINEMENT_X_END = 255.0
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.15
-SIZE_MAX = 3.00
-DIST_MIN = 0.8
-DIST_MAX = 6.5
+SIZE_MIN = 0.20
+SIZE_MAX = 5.00
+DIST_MIN = 1.50
+DIST_MAX = 10.0
 
 # Local refinement to resolve homogenized rivet bands represented as vertical
 # strips (directed along z) and distributed regularly in x within the iceberg
@@ -79,10 +81,14 @@ RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
 # Stronger refinement than the baseline is needed for 0.30 m strips to appear
 # as continuous bands on the shell surface (and not isolated CG1 spots).
-RIVET_STRIP_SIZE_MIN = 0.07
-RIVET_STRIP_SIZE_MAX = 1.40
+RIVET_STRIP_SIZE_MIN = 0.12
+RIVET_STRIP_SIZE_MAX = 2.00
 RIVET_STRIP_MARGIN_X = 0.45
-RIVET_STRIP_MARGIN_Y = 1.20
+RIVET_STRIP_MARGIN_Y = 0.85
+
+# Sampling of the trajectory refinement curve: lower values = faster generation
+# adaptation along the curve.
+TRAJ_SAMPLING = 120
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -248,7 +254,7 @@ def _add_mesh_size_field(occ) -> None:
     # 1) Refinement along the iceberg trajectory
     f_dist_traj = field.add("Distance")
     field.setNumbers(f_dist_traj, "CurvesList", [traj])
-    field.setNumber(f_dist_traj, "Sampling", 200)
+    field.setNumber(f_dist_traj, "Sampling", TRAJ_SAMPLING)
 
     f_th_traj = field.add("Threshold")
     field.setNumber(f_th_traj, "InField", f_dist_traj)
