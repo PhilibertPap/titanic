@@ -63,7 +63,7 @@ ICEBERG_REFINEMENT_X_START = 180.0
 ICEBERG_REFINEMENT_X_END = 255.0
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.22
+SIZE_MIN = 0.15
 SIZE_MAX = 3.00
 DIST_MIN = 0.8
 DIST_MAX = 6.5
@@ -71,15 +71,15 @@ DIST_MAX = 6.5
 # Local refinement to resolve homogenized rivet bands represented as vertical
 # strips (directed along z) and distributed regularly in x within the iceberg
 # impact zone.
-N_RIVET_STRIPS_X = 6
+N_RIVET_STRIPS_X = 10
 RIVET_STRIP_X_START = 177.0
 RIVET_STRIP_X_END = 252.0
-RIVET_STRIP_PHYSICAL_WIDTH_X = 0.30
+RIVET_STRIP_PHYSICAL_WIDTH_X = 0.35
 RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
 # Stronger refinement than the baseline is needed for 0.30 m strips to appear
 # as continuous bands on the shell surface (and not isolated CG1 spots).
-RIVET_STRIP_SIZE_MIN = 0.09
+RIVET_STRIP_SIZE_MIN = 0.07
 RIVET_STRIP_SIZE_MAX = 1.40
 RIVET_STRIP_MARGIN_X = 0.45
 RIVET_STRIP_MARGIN_Y = 1.20

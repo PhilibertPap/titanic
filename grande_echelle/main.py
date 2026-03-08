@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 def _bandes_rivets_par_defaut(x_debut: float, x_fin: float) -> list[dict]:
     n_bandes = 10
-    largeur_x = 0.30
+    largeur_x = 0.35
     x_margin = 0.5 * largeur_x
     x_centres = np.linspace(x_debut + x_margin, x_fin - x_margin, n_bandes)
 
@@ -104,7 +104,7 @@ def config_par_defaut() -> dict:
         "activer_phase_field_global": True,
         "phase_field_utiliser_preset_selectionne": False,
         "phase_field_gc_j_m2": 7000.0,
-        "phase_field_l0_m": 0.4,
+        "phase_field_l0_m": 0.15,
         "phase_field_raideur_residuelle": 1e-6,
         "phase_field_scinder_traction_compression": True,
         "phase_field_seuil_nucleation_j_m3": 8.0e4,

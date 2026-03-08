@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pyvista as pv
 
 LABEL_FRAC_D95 = "part zone tres endommagee (d >= 0.95)"
 
@@ -98,29 +101,139 @@ def tracer_dommages(avec: Suivi, sans: Suivi, outdir: Path):
 
 def tracer_ecarts_dommages(avec: Suivi, sans: Suivi, outdir: Path):
     grille = _grille_temps_commune(avec, sans)
-    delta_max = _interp(grille, avec.time, avec.max_damage) - _interp(grille, sans.time, sans.max_damage)
-    delta_mean = _interp(grille, avec.time, avec.mean_damage) - _interp(grille, sans.time, sans.mean_damage)
-    delta_frac = _interp(grille, avec.time, avec.frac_d95) - _interp(grille, sans.time, sans.frac_d95)
+    max_avec = _interp(grille, avec.time, avec.max_damage)
+    max_sans = _interp(grille, sans.time, sans.max_damage)
+    mean_avec = _interp(grille, avec.time, avec.mean_damage)
+    mean_sans = _interp(grille, sans.time, sans.mean_damage)
+    frac_avec = _interp(grille, avec.time, avec.frac_d95)
+    frac_sans = _interp(grille, sans.time, sans.frac_d95)
 
-    fig, axes = plt.subplots(3, 1, figsize=(9.5, 8.8), sharex=True)
-    axes[0].plot(grille, delta_max, linewidth=2.0)
+    def _delta_rel_percent(val_avec: np.ndarray, val_sans: np.ndarray) -> np.ndarray:
+        delta = val_avec - val_sans
+        denom = np.maximum(np.abs(val_sans), 1e-8)
+        out = 100.0 * delta / denom
+        out[np.abs(val_sans) < 1e-6] = 0.0
+        return out
+
+    delta_mean = _delta_rel_percent(mean_avec, mean_sans)
+    delta_frac = _delta_rel_percent(frac_avec, frac_sans)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 6.6), sharex=True)
+    axes[0].plot(grille, delta_mean, linewidth=2.0)
     axes[0].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
-    axes[0].set_ylabel("Delta max damage")
-    axes[0].set_title("Ecarts temporels (avec - sans rivets)")
+    axes[0].set_ylabel("Delta dommage moyen [%]")
+    axes[0].set_title("Ecarts temporels relatifs (avec - sans) / sans")
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(grille, delta_mean, linewidth=2.0)
+    axes[1].plot(grille, delta_frac, linewidth=2.0)
     axes[1].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
-    axes[1].set_ylabel("Delta dommage moyen")
+    axes[1].set_ylabel(f"Delta {LABEL_FRAC_D95} [%]")
+    axes[1].set_xlabel("Temps")
     axes[1].grid(True, alpha=0.3)
 
-    axes[2].plot(grille, delta_frac, linewidth=2.0)
-    axes[2].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
-    axes[2].set_ylabel(f"Delta {LABEL_FRAC_D95}")
-    axes[2].set_xlabel("Temps")
-    axes[2].grid(True, alpha=0.3)
-
     _save(fig, outdir / "ecarts_temporels_dommages.png")
+
+
+def _extract_step_from_damage_name(path: Path) -> int:
+    m = re.search(r"damage(\d+)\.pvtu$", path.name)
+    return int(m.group(1)) if m else -1
+
+
+def _mask_points_from_bandes(points: np.ndarray, bandes: list[dict]) -> np.ndarray:
+    if len(points.shape) != 2 or points.shape[1] < 3 or not bandes:
+        return np.zeros(points.shape[0], dtype=bool)
+    x = points[:, 0]
+    z = points[:, 2]
+    mask = np.zeros(points.shape[0], dtype=bool)
+    for b in bandes:
+        xc = float(b.get("x_centre_m", 0.0))
+        w = float(b.get("largeur_x_m", 0.3))
+        xmin = xc - 0.5 * w
+        xmax = xc + 0.5 * w
+        zmin = float(b.get("z_min_m", -np.inf))
+        zmax = float(b.get("z_max_m", np.inf))
+        if zmax < zmin:
+            zmin, zmax = zmax, zmin
+        mask |= (x >= xmin) & (x <= xmax) & (z >= zmin) & (z <= zmax)
+    return mask
+
+
+def _lire_bandes_avec_depuis_metadata(avec: Suivi) -> list[dict]:
+    run_dir = avec.source.parent.parent
+    meta_path = run_dir / "run_metadata.json"
+    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    bandes = data.get("config", {}).get("bandes_rivets_z", [])
+    return list(bandes) if isinstance(bandes, list) else []
+
+
+def _serie_dommage_bandes(quasi_static_dir: Path, bandes: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    files = sorted(quasi_static_dir.glob("damage*.pvtu"), key=_extract_step_from_damage_name)
+    if not files:
+        return np.asarray([], dtype=int), np.asarray([], dtype=float)
+
+    steps = []
+    means = []
+    for p in files:
+        step = _extract_step_from_damage_name(p)
+        if step < 0:
+            continue
+        mesh = pv.read(str(p))
+        if "Damage" not in mesh.array_names:
+            continue
+        mask = _mask_points_from_bandes(mesh.points, bandes)
+        values = np.asarray(mesh["Damage"], dtype=float)
+        mean_band = float(np.mean(values[mask])) if np.any(mask) else 0.0
+        steps.append(step)
+        means.append(mean_band)
+    return np.asarray(steps, dtype=int), np.asarray(means, dtype=float)
+
+
+def tracer_dommage_moyen_bandes(avec: Suivi, sans: Suivi, outdir: Path):
+    bandes = _lire_bandes_avec_depuis_metadata(avec)
+    if not bandes:
+        return
+
+    dir_avec = avec.source.parent
+    dir_sans = sans.source.parent
+    step_avec, mean_band_avec = _serie_dommage_bandes(dir_avec, bandes)
+    step_sans, mean_band_sans = _serie_dommage_bandes(dir_sans, bandes)
+    if step_avec.size == 0 or step_sans.size == 0:
+        return
+
+    idx_t_avec = np.clip(step_avec, 0, len(avec.time) - 1)
+    idx_t_sans = np.clip(step_sans, 0, len(sans.time) - 1)
+    t_avec = avec.time[idx_t_avec]
+    t_sans = sans.time[idx_t_sans]
+
+    t_common = _grille_temps_commune(
+        Suivi(avec.source, avec.label, t_avec, avec.max_u[: len(t_avec)], avec.max_damage[: len(t_avec)],
+              avec.mean_damage[: len(t_avec)], avec.frac_d95[: len(t_avec)],
+              avec.temps_pas[: len(t_avec)], avec.temps_meca[: len(t_avec)], avec.temps_pf[: len(t_avec)]),
+        Suivi(sans.source, sans.label, t_sans, sans.max_u[: len(t_sans)], sans.max_damage[: len(t_sans)],
+              sans.mean_damage[: len(t_sans)], sans.frac_d95[: len(t_sans)],
+              sans.temps_pas[: len(t_sans)], sans.temps_meca[: len(t_sans)], sans.temps_pf[: len(t_sans)]),
+        n=500,
+    )
+    band_avec_i = np.interp(t_common, t_avec, mean_band_avec)
+    band_sans_i = np.interp(t_common, t_sans, mean_band_sans)
+    delta_rel = 100.0 * (band_avec_i - band_sans_i) / np.maximum(np.abs(band_sans_i), 1e-8)
+    delta_rel[np.abs(band_sans_i) < 1e-6] = 0.0
+
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 7.0), sharex=True)
+    axes[0].plot(t_avec, mean_band_avec, linewidth=2.2, label=f"{avec.label} (bandes)")
+    axes[0].plot(t_sans, mean_band_sans, linewidth=2.2, label=f"{sans.label} (meme zone)")
+    axes[0].set_ylabel("Dommage moyen")
+    axes[0].set_title("Dommage moyen dans les bandes rivets (meme zone comparee)")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=9)
+
+    axes[1].plot(t_common, delta_rel, linewidth=2.2, color="tab:red")
+    axes[1].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
+    axes[1].set_xlabel("Temps")
+    axes[1].set_ylabel("Delta relatif [%]")
+    axes[1].grid(True, alpha=0.3)
+
+    _save(fig, outdir / "comparaison_dommage_moyen_bandes.png")
 
 
 def tracer_deplacement(avec: Suivi, sans: Suivi, outdir: Path):
@@ -247,6 +360,7 @@ def main():
 
     tracer_dommages(avec, sans, outdir)
     tracer_ecarts_dommages(avec, sans, outdir)
+    tracer_dommage_moyen_bandes(avec, sans, outdir)
     tracer_deplacement(avec, sans, outdir)
     tracer_trajectoire_u_d(avec, sans, outdir)
     tracer_couts(avec, sans, outdir)
