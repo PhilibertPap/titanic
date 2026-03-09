@@ -79,11 +79,11 @@ RIVET_STRIP_X_END = 252.0
 RIVET_STRIP_PHYSICAL_WIDTH_X = 0.35
 RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
-# Use a moderate local refinement only around a subset of bands near the active zone.
-RIVET_STRIP_SIZE_MIN = 0.28
-RIVET_STRIP_SIZE_MAX = 3.50
-RIVET_STRIP_MARGIN_X = 0.25
-RIVET_STRIP_MARGIN_Y = 0.55
+# Resolve a few central rivet bands with ~2-3 elements across their width.
+RIVET_STRIP_SIZE_MIN = 0.12
+RIVET_STRIP_SIZE_MAX = 2.50
+RIVET_STRIP_MARGIN_X = 0.18
+RIVET_STRIP_MARGIN_Y = 0.45
 
 # Sampling of the trajectory refinement curve: lower values = faster generation
 # adaptation along the curve.

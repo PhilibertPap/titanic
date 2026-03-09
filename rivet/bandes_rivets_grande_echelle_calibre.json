@@ -10,7 +10,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_02",
@@ -20,7 +20,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_03",
@@ -30,7 +30,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_04",
@@ -40,7 +40,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_05",
@@ -50,7 +50,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_06",
@@ -60,7 +60,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_07",
@@ -70,7 +70,7 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     },
     {
       "nom": "bande_x_08",
@@ -80,20 +80,20 @@
       "z_max_m": 0.2,
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_J_m2": 3000.0
+      "Gc_J_m2": 2400.0
     }
   ],
   "calibration": {
     "source": "rivet_local",
     "source_summary": {
-      "Gc_local_J_m2": 3000.0,
+      "Gc_local_J_m2": 2400.0,
       "rupture_traction_pa": 90756302.5210084,
       "ratio_rupture": 0.3630252100840336
     },
     "global_mapping": {
       "facteur_E": 0.98,
       "facteur_epaisseur": 1.0,
-      "Gc_bandes_J_m2": 3000.0
+      "Gc_bandes_J_m2": 2400.0
     }
   }
 }
