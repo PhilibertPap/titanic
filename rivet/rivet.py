@@ -36,7 +36,7 @@ def config_par_defaut() -> dict:
         "max_iter": 10,
         "tol": 1e-4,
         # Sorties
-        "resultats_dossier": "resultats_titanic_AT1",
+        "resultats_dossier": "results/rivet_local",
         "export_filename": "titanic_simulation.bp",
     }
 
@@ -129,8 +129,8 @@ def _create_solver(comm):
 
 
 def _build_output_path(cfg) -> Path:
-    script_dir = Path(__file__).resolve().parent
-    output_dir = script_dir / cfg.resultats_dossier
+    repo_dir = Path(__file__).resolve().parent.parent
+    output_dir = repo_dir / cfg.resultats_dossier
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / cfg.export_filename
 

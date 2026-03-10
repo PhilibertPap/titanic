@@ -72,7 +72,7 @@ Le script `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` fait le pont 
 - `grande_echelle/quasi_static.py` : solveur quasi-statique + phase-field global
 - `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` : calibration bandes depuis `rivet/`
 - `rivet/rivet.py` : modele local/intermediaire phase-field + export preset bandes
-- `vis_rivet/vis_rivet.py` : wrapper local minimal pour lancer le modele `rivet/` avec une CLI simple
+- `vis_rivet/vis_rivet.py` : script FEM local autonome pour visualisation ParaView (`.bp`) et resume JSON, sorties dans `results/vis_rivet/`
 
 ## Workflow recommande (multi-echelles)
 
@@ -209,8 +209,10 @@ Note :
 
 ### Modele local `rivet/`
 
-- `run_summary.json` : resume local (rupture, traction de rupture, dommage final, etc.)
-- fichiers `.bp` pour visualisation ParaView
+- `results/vis_rivet/run_summary.json` : resume du script autonome `vis_rivet/vis_rivet.py`
+- `results/vis_rivet/*.bp` : sorties ParaView du script autonome
+- `results/rivet_local/run_summary.json` : resume du proxy local `rivet/rivet.py`
+- `results/rivet_local/*.bp` : sorties ParaView du proxy local
 
 ## Hypotheses / limites (important)
 
